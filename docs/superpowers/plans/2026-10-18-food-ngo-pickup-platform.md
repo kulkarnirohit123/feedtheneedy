@@ -483,7 +483,7 @@ git commit -m "feat: add DynamoDB access wrappers"
 
 **Interfaces:**
 - Consumes: `ClassifierResult`, `ClassifierVerdict` from `services/shared/types.ts`.
-- Produces: `classifyMessage(text: string): Promise<ClassifierResult>` — used by Task 5 (donorHandler). Throws `ClassifierError` on malformed/unparseable agent output so the caller can fail open per spec.
+- Produces: `classifyMessage(text: string): Promise<ClassifierResult>` — used by Task 5 (donorHandler). Throws `ClassifierError` on EVERY failure mode (malformed/unparseable agent output, unknown verdict, missing confidence, AND any Bedrock SDK/network/timeout failure during `client.send`) so Task 5's `instanceof ClassifierError` check reliably fails open per the Global Constraint — no failure path from this function can surface as an unwrapped error. Multi-chunk stream reassembly uses one `TextDecoder` with `{stream: true}` across the whole loop so a multi-byte UTF-8 character split across a chunk boundary decodes correctly.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -533,6 +533,38 @@ test('throws ClassifierError on unknown verdict value', async () => {
   );
   await expect(classifyMessage('odd')).rejects.toThrow(ClassifierError);
 });
+
+test('reassembles a multi-byte UTF-8 character split across two stream chunks', async () => {
+  const json = JSON.stringify({
+    verdict: 'food_donation_offer',
+    confidence: 0.8,
+    extracted: { qty: '₹0 cost', foodType: 'vada pav', locationText: 'Koramangala' },
+  });
+  const bytes = new TextEncoder().encode(json);
+  // '₹' is a 3-byte UTF-8 sequence; find its first byte and split the stream
+  // one byte into that sequence so the character straddles the chunk boundary.
+  const rupeeIndex = json.indexOf('₹');
+  const splitPoint = new TextEncoder().encode(json.slice(0, rupeeIndex)).length + 1;
+  const chunk1 = bytes.slice(0, splitPoint);
+  const chunk2 = bytes.slice(splitPoint);
+
+  bedrockMock.on(InvokeAgentCommand).resolves({
+    completion: {
+      [Symbol.asyncIterator]: async function* () {
+        yield { chunk: { bytes: chunk1 } };
+        yield { chunk: { bytes: chunk2 } };
+      },
+    },
+  } as unknown as Record<string, never>);
+
+  const result = await classifyMessage('split boundary test');
+  expect(result.extracted?.qty).toBe('₹0 cost');
+});
+
+test('wraps a Bedrock SDK failure as ClassifierError so the caller can fail open', async () => {
+  bedrockMock.on(InvokeAgentCommand).rejects(new Error('ThrottlingException'));
+  await expect(classifyMessage('any message')).rejects.toThrow(ClassifierError);
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -562,40 +594,49 @@ const KNOWN_VERDICTS: ClassifierVerdict[] = [
 export class ClassifierError extends Error {}
 
 export async function classifyMessage(text: string): Promise<ClassifierResult> {
-  const response = await client.send(
-    new InvokeAgentCommand({
-      agentId: AGENT_ID,
-      agentAliasId: AGENT_ALIAS_ID,
-      sessionId: `classify-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      inputText: text,
-    }),
-  );
+  try {
+    const response = await client.send(
+      new InvokeAgentCommand({
+        agentId: AGENT_ID,
+        agentAliasId: AGENT_ALIAS_ID,
+        sessionId: `classify-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        inputText: text,
+      }),
+    );
 
-  let raw = '';
-  if (response.completion) {
-    for await (const event of response.completion) {
-      if (event.chunk?.bytes) {
-        raw += new TextDecoder().decode(event.chunk.bytes as Uint8Array);
+    let raw = '';
+    const decoder = new TextDecoder();
+    if (response.completion) {
+      for await (const event of response.completion) {
+        if (event.chunk?.bytes) {
+          raw += decoder.decode(event.chunk.bytes as Uint8Array, { stream: true });
+        }
       }
     }
-  }
+    raw += decoder.decode();
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new ClassifierError(`Agent output was not valid JSON: ${raw}`);
-  }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new ClassifierError(`Agent output was not valid JSON: ${raw}`);
+    }
 
-  const result = parsed as Partial<ClassifierResult>;
-  if (!result.verdict || !KNOWN_VERDICTS.includes(result.verdict as ClassifierVerdict)) {
-    throw new ClassifierError(`Unknown verdict: ${String(result.verdict)}`);
-  }
-  if (typeof result.confidence !== 'number') {
-    throw new ClassifierError('Missing confidence score');
-  }
+    const result = parsed as Partial<ClassifierResult>;
+    if (!result.verdict || !KNOWN_VERDICTS.includes(result.verdict as ClassifierVerdict)) {
+      throw new ClassifierError(`Unknown verdict: ${String(result.verdict)}`);
+    }
+    if (typeof result.confidence !== 'number') {
+      throw new ClassifierError('Missing confidence score');
+    }
 
-  return result as ClassifierResult;
+    return result as ClassifierResult;
+  } catch (err) {
+    if (err instanceof ClassifierError) throw err;
+    throw new ClassifierError(
+      `Bedrock invocation failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 ```
 
