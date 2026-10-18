@@ -3,13 +3,15 @@ import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
 import { handleDonorMessage } from './donorHandler';
 import * as dynamo from '../shared/dynamo';
 import * as classifier from './classifier';
+import * as whatsapp from '../shared/whatsapp';
 
 jest.mock('../shared/dynamo');
 jest.mock('./classifier');
-jest.mock('../shared/whatsapp', () => ({ sendWhatsAppText: jest.fn() }));
+jest.mock('../shared/whatsapp');
 
 const mockedDynamo = dynamo as jest.Mocked<typeof dynamo>;
 const mockedClassifier = classifier as jest.Mocked<typeof classifier>;
+const mockedWhatsapp = whatsapp as jest.Mocked<typeof whatsapp>;
 const sfnMock = mockClient(SFNClient);
 
 beforeEach(() => {
@@ -38,6 +40,12 @@ test('confident food donation offer creates a Request, sends donor ack, and star
   expect(created.status).toBe('MATCHING');
   expect(mockedDynamo.putSpamLog).not.toHaveBeenCalled();
 
+  expect(mockedWhatsapp.sendWhatsAppText).toHaveBeenCalledTimes(1);
+  expect(mockedWhatsapp.sendWhatsAppText).toHaveBeenCalledWith(
+    '+91999',
+    'Thank you for sharing the information, driver will be available in next 60 minutes',
+  );
+
   const executions = sfnMock.commandCalls(StartExecutionCommand);
   expect(executions).toHaveLength(1);
   expect(JSON.parse(executions[0].args[0].input.input as string)).toEqual({ requestId: created.requestId });
@@ -54,6 +62,7 @@ test('low confidence offer does not start a pipeline execution', async () => {
   await handleDonorMessage({ messageId: 'm5', fromPhone: '+91999', text: 'maybe have food' });
 
   expect(sfnMock.commandCalls(StartExecutionCommand)).toHaveLength(0);
+  expect(mockedWhatsapp.sendWhatsAppText).not.toHaveBeenCalled();
 });
 
 test('low confidence offer goes to PENDING_REVIEW, no dispatch', async () => {
@@ -68,6 +77,8 @@ test('low confidence offer goes to PENDING_REVIEW, no dispatch', async () => {
 
   const created = mockedDynamo.putRequest.mock.calls[0][0];
   expect(created.status).toBe('PENDING_REVIEW');
+  expect(mockedWhatsapp.sendWhatsAppText).not.toHaveBeenCalled();
+  expect(sfnMock.commandCalls(StartExecutionCommand)).toHaveLength(0);
 });
 
 test('spam verdict is logged and dropped, no Request created', async () => {
@@ -78,6 +89,8 @@ test('spam verdict is logged and dropped, no Request created', async () => {
 
   expect(mockedDynamo.putRequest).not.toHaveBeenCalled();
   expect(mockedDynamo.putSpamLog).toHaveBeenCalledTimes(1);
+  expect(mockedWhatsapp.sendWhatsAppText).not.toHaveBeenCalled();
+  expect(sfnMock.commandCalls(StartExecutionCommand)).toHaveLength(0);
 });
 
 test('classifier failure fails open to PENDING_REVIEW, never dropped', async () => {
@@ -88,6 +101,8 @@ test('classifier failure fails open to PENDING_REVIEW, never dropped', async () 
 
   expect(mockedDynamo.putRequest).toHaveBeenCalledTimes(1);
   expect(mockedDynamo.putRequest.mock.calls[0][0].status).toBe('PENDING_REVIEW');
+  expect(mockedWhatsapp.sendWhatsAppText).not.toHaveBeenCalled();
+  expect(sfnMock.commandCalls(StartExecutionCommand)).toHaveLength(0);
 });
 
 test('duplicate messageId is a no-op (idempotency)', async () => {
@@ -97,4 +112,6 @@ test('duplicate messageId is a no-op (idempotency)', async () => {
 
   expect(mockedClassifier.classifyMessage).not.toHaveBeenCalled();
   expect(mockedDynamo.putRequest).not.toHaveBeenCalled();
+  expect(mockedWhatsapp.sendWhatsAppText).not.toHaveBeenCalled();
+  expect(sfnMock.commandCalls(StartExecutionCommand)).toHaveLength(0);
 });
