@@ -22,8 +22,23 @@ the AWS CDS Partner hackathon (devpost.com/aws-cds-partner).
 - Admin web dashboard shows live requests, can override driver assignment,
   can view/export a monthly report.
 - Entire flow built on AWS services (End User Messaging Social, Lambda,
-  Step Functions, DynamoDB, S3, Cognito, Location Service, Bedrock,
-  EventBridge, QuickSight/CloudWatch) to qualify for hackathon scoring.
+  Step Functions, DynamoDB, S3, Cognito, Location Service, Bedrock
+  AgentCore, EventBridge, QuickSight/CloudWatch) to qualify for hackathon
+  scoring.
+
+## Hackathon fit (AWS CDS Partner Challenge, deadline 2026-10-28)
+
+- Required: at least one AWS Communication Developer Service at runtime
+  → satisfied by AWS End User Messaging Social (WhatsApp).
+- Recommended (not required, scores higher): Amazon Bedrock AgentCore
+  → satisfied by using AgentCore (not a plain Bedrock invoke call) for
+  the InboundRouter classifier.
+- Submission needs: public/private repo link, full source + run
+  instructions, working project matching demo video + text description,
+  submitted before 2026-10-28 close.
+- Critical path risk: WhatsApp Business/Meta verification lead time —
+  start this the same day implementation begins, do not leave it for
+  later in the 10-day window.
 
 ## Out of scope (MVP)
 
@@ -45,7 +60,7 @@ AWS End User Messaging Social (WhatsApp Business API, AWS-native)
 API Gateway (REST) ── webhook endpoint, signature verification
    ↕
 Lambda: InboundRouter
-   ├─ Amazon Bedrock (Claude Haiku) ── classify msg:
+   ├─ Amazon Bedrock AgentCore (Claude Haiku agent) ── classify msg:
    │      {food_donation_offer | spam | marketing | loan_offer | unrelated}
    │      + extract structured fields (qty, location, food type) when
    │        food_donation_offer
