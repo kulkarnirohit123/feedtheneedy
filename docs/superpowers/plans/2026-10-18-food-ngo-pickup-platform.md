@@ -166,6 +166,7 @@ export interface FoodRequest {
   pendingTaskToken?: string;
   pendingStep?: 'ACCEPT' | 'PICKUP_PHOTO' | 'FRIDGE_PHOTO';
   lastInboundMessageId?: string;
+  triedDriverIds?: string[];
 }
 
 export interface Driver {
@@ -225,15 +226,15 @@ git commit -m "feat: scaffold repo, define shared domain types"
 
 **Interfaces:**
 - Consumes: `FoodRequest`, `Driver`, `Fridge` from `services/shared/types.ts` (Task 1).
-- Produces: `putRequest(req: FoodRequest): Promise<void>`, `getRequest(requestId: string): Promise<FoodRequest | null>`, `updateRequest(requestId: string, patch: Partial<FoodRequest>): Promise<void>`, `findActiveRequestByDriverPhone(phone: string): Promise<FoodRequest | null>`, `putSpamLog(entry: {msgId: string; phone: string; rawText: string; verdict: string; confidence: number}): Promise<void>`, `putDonationHistory(req: FoodRequest): Promise<void>`, `getAvailableDrivers(): Promise<Driver[]>`, `getFridges(): Promise<Fridge[]>`, `updateDriverStatus(driverId: string, status: 'available'|'busy'): Promise<void>`, `hasProcessedMessage(messageId: string): Promise<boolean>`, `markMessageProcessed(messageId: string): Promise<void>`. Every later Lambda task imports from here — no task talks to DynamoDB directly.
+- Produces: `putRequest(req: FoodRequest): Promise<void>`, `getRequest(requestId: string): Promise<FoodRequest | null>`, `updateRequest(requestId: string, patch: Partial<FoodRequest>): Promise<void>`, `findActiveRequestByDriverPhone(phone: string): Promise<FoodRequest | null>`, `putSpamLog(entry: {msgId: string; phone: string; rawText: string; verdict: string; confidence: number}): Promise<void>`, `putDonationHistory(req: FoodRequest): Promise<void>`, `getAvailableDrivers(): Promise<Driver[]>`, `getDriverByPhone(phone: string): Promise<Driver | null>` (scans ALL drivers regardless of available/busy status — this is how Task 6 tells a driver reply apart from a donor message even when the driver is currently busy on an assigned job), `getDriverById(driverId: string): Promise<Driver | null>` (used wherever a Lambda has a `driverId` from a `FoodRequest` and needs that driver's phone number to send a WhatsApp message — a request never stores the driver's phone directly), `getFridges(): Promise<Fridge[]>`, `updateDriverStatus(driverId: string, status: 'available'|'busy'): Promise<void>`, `hasProcessedMessage(messageId: string): Promise<boolean>`, `markMessageProcessed(messageId: string): Promise<void>`. Every later Lambda task imports from here — no task talks to DynamoDB directly.
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
 // services/shared/dynamo.test.ts
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
-import { putRequest, getRequest } from './dynamo';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { putRequest, getRequest, getDriverByPhone, getDriverById } from './dynamo';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
@@ -263,6 +264,24 @@ test('getRequest returns null when item missing', async () => {
   ddbMock.on(GetCommand).resolves({});
   const result = await getRequest('missing');
   expect(result).toBeNull();
+});
+
+test('getDriverByPhone finds a driver regardless of busy/available status', async () => {
+  ddbMock.on(ScanCommand).resolves({ Items: [{ driverId: 'd1', phone: '+91driver', status: 'busy' }] });
+  const result = await getDriverByPhone('+91driver');
+  expect(result?.driverId).toBe('d1');
+});
+
+test('getDriverByPhone returns null for an unknown phone', async () => {
+  ddbMock.on(ScanCommand).resolves({ Items: [] });
+  const result = await getDriverByPhone('+91unknown');
+  expect(result).toBeNull();
+});
+
+test('getDriverById reads a driver by id', async () => {
+  ddbMock.on(GetCommand).resolves({ Item: { driverId: 'driver-1', phone: '+91999' } });
+  const result = await getDriverById('driver-1');
+  expect(result?.phone).toBe('+91999');
 });
 ```
 
@@ -372,6 +391,23 @@ export async function getAvailableDrivers(): Promise<Driver[]> {
 export async function getFridges(): Promise<Fridge[]> {
   const res = await client.send(new ScanCommand({ TableName: FRIDGES_TABLE }));
   return (res.Items as Fridge[]) ?? [];
+}
+
+export async function getDriverByPhone(phone: string): Promise<Driver | null> {
+  const res = await client.send(
+    new ScanCommand({
+      TableName: DRIVERS_TABLE,
+      FilterExpression: 'phone = :p',
+      ExpressionAttributeValues: { ':p': phone },
+    }),
+  );
+  const items = (res.Items as Driver[]) ?? [];
+  return items[0] ?? null;
+}
+
+export async function getDriverById(driverId: string): Promise<Driver | null> {
+  const res = await client.send(new GetCommand({ TableName: DRIVERS_TABLE, Key: { driverId } }));
+  return (res.Item as Driver) ?? null;
 }
 
 export async function updateDriverStatus(driverId: string, status: 'available' | 'busy'): Promise<void> {
@@ -637,13 +673,15 @@ git commit -m "feat: add WhatsApp send wrapper over End User Messaging Social"
 - Test: `services/inbound-router/donorHandler.test.ts`
 
 **Interfaces:**
-- Consumes: `classifyMessage` (Task 3), `ClassifierError` (Task 3), `putRequest`/`putSpamLog`/`hasProcessedMessage`/`markMessageProcessed` (Task 2), `sendWhatsAppText` (Task 4), `FoodRequest` (Task 1).
-- Produces: `handleDonorMessage(input: {messageId: string; fromPhone: string; text: string; geo?: {lat:number;lng:number}}): Promise<void>` — called by Task 6's top-level handler when sender is not a known driver.
+- Consumes: `classifyMessage` (Task 3), `ClassifierError` (Task 3), `putRequest`/`putSpamLog`/`hasProcessedMessage`/`markMessageProcessed` (Task 2), `sendWhatsAppText` (Task 4), `FoodRequest` (Task 1), `process.env.STATE_MACHINE_ARN` (set by Task 16's CDK stack on this same Lambda; this task only reads it at runtime, no build-time dependency on Task 16).
+- Produces: `handleDonorMessage(input: {messageId: string; fromPhone: string; text: string; geo?: {lat:number;lng:number}}): Promise<void>` — called by Task 6's top-level handler when sender is not a known driver. On the confident `food_donation_offer` path only, starts the Step Functions execution (Task 16's `PickupStateMachine`) with input `{requestId}` — this is the only place `StartExecutionCommand` is called; `PENDING_REVIEW` requests sit untouched until an admin acts, and the reassign loop inside an already-running execution (Task 10) never needs a second `StartExecution`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
 // services/inbound-router/donorHandler.test.ts
+import { mockClient } from 'aws-sdk-client-mock';
+import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
 import { handleDonorMessage } from './donorHandler';
 import * as dynamo from '../shared/dynamo';
 import * as classifier from './classifier';
@@ -654,10 +692,15 @@ jest.mock('../shared/whatsapp', () => ({ sendWhatsAppText: jest.fn() }));
 
 const mockedDynamo = dynamo as jest.Mocked<typeof dynamo>;
 const mockedClassifier = classifier as jest.Mocked<typeof classifier>;
+const sfnMock = mockClient(SFNClient);
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  sfnMock.reset();
+  sfnMock.on(StartExecutionCommand).resolves({});
+});
 
-test('confident food donation offer creates a Request and sends donor ack', async () => {
+test('confident food donation offer creates a Request, sends donor ack, and starts the pipeline execution', async () => {
   mockedDynamo.hasProcessedMessage.mockResolvedValue(false);
   mockedClassifier.classifyMessage.mockResolvedValue({
     verdict: 'food_donation_offer',
@@ -676,6 +719,23 @@ test('confident food donation offer creates a Request and sends donor ack', asyn
   const created = mockedDynamo.putRequest.mock.calls[0][0];
   expect(created.status).toBe('MATCHING');
   expect(mockedDynamo.putSpamLog).not.toHaveBeenCalled();
+
+  const executions = sfnMock.commandCalls(StartExecutionCommand);
+  expect(executions).toHaveLength(1);
+  expect(JSON.parse(executions[0].args[0].input.input as string)).toEqual({ requestId: created.requestId });
+});
+
+test('low confidence offer does not start a pipeline execution', async () => {
+  mockedDynamo.hasProcessedMessage.mockResolvedValue(false);
+  mockedClassifier.classifyMessage.mockResolvedValue({
+    verdict: 'food_donation_offer',
+    confidence: 0.3,
+    extracted: { qty: '?', foodType: '?', locationText: '?' },
+  });
+
+  await handleDonorMessage({ messageId: 'm5', fromPhone: '+91999', text: 'maybe have food' });
+
+  expect(sfnMock.commandCalls(StartExecutionCommand)).toHaveLength(0);
 });
 
 test('low confidence offer goes to PENDING_REVIEW, no dispatch', async () => {
@@ -732,14 +792,26 @@ Expected: FAIL — `Cannot find module './donorHandler'`
 ```typescript
 // services/inbound-router/donorHandler.ts
 import { randomUUID } from 'crypto';
+import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
 import { classifyMessage, ClassifierError } from './classifier';
 import { putRequest, putSpamLog, hasProcessedMessage, markMessageProcessed } from '../shared/dynamo';
 import { sendWhatsAppText } from '../shared/whatsapp';
 import { FoodRequest } from '../shared/types';
 
+const sfn = new SFNClient({});
 const CONFIDENCE_THRESHOLD = 0.7;
 const DONOR_ACK_TEXT =
   'Thank you for sharing the information, driver will be available in next 60 minutes';
+
+async function startPickupExecution(requestId: string): Promise<void> {
+  await sfn.send(
+    new StartExecutionCommand({
+      stateMachineArn: process.env.STATE_MACHINE_ARN ?? '',
+      name: requestId,
+      input: JSON.stringify({ requestId }),
+    }),
+  );
+}
 
 export interface InboundDonorMessage {
   messageId: string;
@@ -786,6 +858,7 @@ export async function handleDonorMessage(input: InboundDonorMessage): Promise<vo
 
     if (isConfident) {
       await sendWhatsAppText(input.fromPhone, DONOR_ACK_TEXT);
+      await startPickupExecution(req.requestId);
     }
   } catch (err) {
     if (err instanceof ClassifierError) {
@@ -831,8 +904,128 @@ git commit -m "feat: classify inbound donor messages, dispatch or quarantine"
 - Test: `services/inbound-router/handler.test.ts`
 
 **Interfaces:**
-- Consumes: `findActiveRequestByDriverPhone`, `getAvailableDrivers` (reused to check if phone is a driver) (Task 2), `sendWhatsAppText` (Task 4), `handleDonorMessage` (Task 5).
-- Produces: `handleDriverMessage(input: {fromPhone: string; text?: string; mediaUrl?: string}): Promise<void>` — sends `SendTaskSuccess`/`SendTaskFailure` to Step Functions using `req.pendingTaskToken`. `handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult>` is the Lambda entrypoint wired to API Gateway in Task 16; it looks up the sender, decides donor vs. driver branch.
+- Consumes: `findActiveRequestByDriverPhone`, `getDriverByPhone` (Task 2), `sendWhatsAppText` (Task 4), `handleDonorMessage` (Task 5).
+- Produces: `handleDriverMessage(input: {fromPhone: string; text?: string; mediaUrl?: string}): Promise<void>` — resolves the waiting Step Functions task via `SendTaskSuccess` once the reply shape (text vs. photo) matches what the pending step expects. `handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult>` is the Lambda entrypoint wired to API Gateway in Task 16; it looks up the sender via `getDriverByPhone` (a non-null result means driver, regardless of busy/available status) to decide donor vs. driver branch.
+- **Known gap, closed in Task 13:** at this point `handleDriverMessage` only checks that a photo step got *some* media and a non-photo step got *some* text — it forwards the raw reply straight to `SendTaskSuccess` without validating the media is a real photo or routing an invalid one to a retry. Task 13 modifies this file once `handlePickupPhoto` (Task 11) and `handleFridgePhoto` (Task 13) both exist, since `handleDriverMessage` needs to import `handleResult` from both — importing them here would reference files that don't exist yet at this point in the plan's build order.
+
+- [ ] **Step 1: Write the failing test**
+
+```typescript
+// services/inbound-router/driverHandler.test.ts
+import { mockClient } from 'aws-sdk-client-mock';
+import { SFNClient, SendTaskSuccessCommand } from '@aws-sdk/client-sfn';
+import { handleDriverMessage } from './driverHandler';
+import * as dynamo from '../shared/dynamo';
+
+jest.mock('../shared/dynamo');
+jest.mock('../shared/whatsapp', () => ({ sendWhatsAppText: jest.fn() }));
+
+const sfnMock = mockClient(SFNClient);
+const mockedDynamo = dynamo as jest.Mocked<typeof dynamo>;
+
+beforeEach(() => {
+  sfnMock.reset();
+  jest.clearAllMocks();
+});
+
+test('ACCEPT reply resumes the waiting ACCEPT step', async () => {
+  mockedDynamo.findActiveRequestByDriverPhone.mockResolvedValue({
+    requestId: 'req-1',
+    pendingTaskToken: 'token-123',
+    pendingStep: 'ACCEPT',
+    status: 'DRIVER_ASSIGNED',
+  } as never);
+  sfnMock.on(SendTaskSuccessCommand).resolves({});
+
+  await handleDriverMessage({ fromPhone: '+91driver', text: 'ACCEPT' });
+
+  expect(sfnMock.commandCalls(SendTaskSuccessCommand)).toHaveLength(1);
+});
+
+test('photo arriving while waiting on ACCEPT is rejected with a re-prompt, not misfiled', async () => {
+  mockedDynamo.findActiveRequestByDriverPhone.mockResolvedValue({
+    requestId: 'req-1',
+    pendingTaskToken: 'token-123',
+    pendingStep: 'ACCEPT',
+    status: 'DRIVER_ASSIGNED',
+  } as never);
+
+  await handleDriverMessage({ fromPhone: '+91driver', mediaUrl: 'https://media/photo.jpg' });
+
+  expect(sfnMock.commandCalls(SendTaskSuccessCommand)).toHaveLength(0);
+});
+
+test('driver reply with no active request logs and replies gracefully, no crash', async () => {
+  mockedDynamo.findActiveRequestByDriverPhone.mockResolvedValue(null);
+
+  await expect(handleDriverMessage({ fromPhone: '+91driver', text: 'ACCEPT' })).resolves.not.toThrow();
+  expect(sfnMock.commandCalls(SendTaskSuccessCommand)).toHaveLength(0);
+});
+
+test('pickup photo reply with media resumes the waiting PICKUP_PHOTO step', async () => {
+  mockedDynamo.findActiveRequestByDriverPhone.mockResolvedValue({
+    requestId: 'req-1',
+    pendingTaskToken: 'token-456',
+    pendingStep: 'PICKUP_PHOTO',
+    status: 'DRIVER_ACCEPTED',
+  } as never);
+  sfnMock.on(SendTaskSuccessCommand).resolves({});
+
+  await handleDriverMessage({ fromPhone: '+91driver', mediaUrl: 'media:abc' });
+
+  expect(sfnMock.commandCalls(SendTaskSuccessCommand)).toHaveLength(1);
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx jest services/inbound-router/driverHandler.test.ts`
+Expected: FAIL — `Cannot find module './driverHandler'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```typescript
+// services/inbound-router/driverHandler.ts
+import { SFNClient, SendTaskSuccessCommand } from '@aws-sdk/client-sfn';
+import { findActiveRequestByDriverPhone } from '../shared/dynamo';
+import { sendWhatsAppText } from '../shared/whatsapp';
+
+const sfn = new SFNClient({});
+
+export interface InboundDriverMessage {
+  fromPhone: string;
+  text?: string;
+  mediaUrl?: string;
+}
+
+export async function handleDriverMessage(input: InboundDriverMessage): Promise<void> {
+  const req = await findActiveRequestByDriverPhone(input.fromPhone);
+
+  if (!req || !req.pendingTaskToken || !req.pendingStep) {
+    await sendWhatsAppText(
+      input.fromPhone,
+      "We don't have a pending pickup request for you right now.",
+    );
+    return;
+  }
+
+  const isPhotoStep = req.pendingStep === 'PICKUP_PHOTO' || req.pendingStep === 'FRIDGE_PHOTO';
+  const gotPhoto = !!input.mediaUrl;
+
+  if (isPhotoStep !== gotPhoto) {
+    const expected = isPhotoStep ? 'a photo' : 'ACCEPT or DECLINE';
+    await sendWhatsAppText(input.fromPhone, `We're waiting for ${expected} on this pickup. Please resend.`);
+    return;
+  }
+
+  await sfn.send(
+    new SendTaskSuccessCommand({
+      taskToken: req.pendingTaskToken,
+      output: JSON.stringify({ requestId: req.requestId, reply: input.text ?? 'PHOTO', mediaUrl: input.mediaUrl }),
+    }),
+  );
+}
+```
 
 - [ ] **Step 1: Write the failing test**
 
@@ -888,6 +1081,36 @@ test('driver reply with no active request logs and replies gracefully, no crash'
   await expect(handleDriverMessage({ fromPhone: '+91driver', text: 'ACCEPT' })).resolves.not.toThrow();
   expect(sfnMock.commandCalls(SendTaskSuccessCommand)).toHaveLength(0);
 });
+
+test('valid pickup photo reply validates via handleResult then resolves the task token', async () => {
+  mockedDynamo.findActiveRequestByDriverPhone.mockResolvedValue({
+    requestId: 'req-1',
+    pendingTaskToken: 'token-456',
+    pendingStep: 'PICKUP_PHOTO',
+    status: 'DRIVER_ACCEPTED',
+  } as never);
+  sfnMock.on(SendTaskSuccessCommand).resolves({});
+
+  await handleDriverMessage({ fromPhone: '+91driver', mediaUrl: 'media:abc' });
+
+  expect(sfnMock.commandCalls(SendTaskSuccessCommand)).toHaveLength(1);
+});
+
+test('missing-media pickup photo reply fails the task token with InvalidPhotoError for Retry', async () => {
+  mockedDynamo.findActiveRequestByDriverPhone.mockResolvedValue({
+    requestId: 'req-1',
+    pendingTaskToken: 'token-456',
+    pendingStep: 'PICKUP_PHOTO',
+    status: 'DRIVER_ACCEPTED',
+  } as never);
+  sfnMock.on(SendTaskFailureCommand).resolves({});
+
+  await handleDriverMessage({ fromPhone: '+91driver', text: 'oops no photo' });
+
+  const calls = sfnMock.commandCalls(SendTaskFailureCommand);
+  expect(calls).toHaveLength(1);
+  expect(calls[0].args[0].input.error).toBe('InvalidPhotoError');
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -899,9 +1122,11 @@ Expected: FAIL — `Cannot find module './driverHandler'`
 
 ```typescript
 // services/inbound-router/driverHandler.ts
-import { SFNClient, SendTaskSuccessCommand } from '@aws-sdk/client-sfn';
+import { SFNClient, SendTaskSuccessCommand, SendTaskFailureCommand } from '@aws-sdk/client-sfn';
 import { findActiveRequestByDriverPhone } from '../shared/dynamo';
 import { sendWhatsAppText } from '../shared/whatsapp';
+import { handleResult as handlePickupResult, InvalidPhotoError } from '../pipeline/handlePickupPhoto';
+import { handleResult as handleFridgeResult } from '../pipeline/handleFridgePhoto';
 
 const sfn = new SFNClient({});
 
@@ -931,14 +1156,34 @@ export async function handleDriverMessage(input: InboundDriverMessage): Promise<
     return;
   }
 
+  if (isPhotoStep) {
+    const validate = req.pendingStep === 'PICKUP_PHOTO' ? handlePickupResult : handleFridgeResult;
+    try {
+      const result = await validate({ requestId: req.requestId, mediaUrl: input.mediaUrl });
+      await sfn.send(
+        new SendTaskSuccessCommand({ taskToken: req.pendingTaskToken, output: JSON.stringify(result) }),
+      );
+    } catch (err) {
+      if (err instanceof InvalidPhotoError) {
+        await sendWhatsAppText(input.fromPhone, "That didn't look like a valid photo — please resend.");
+        await sfn.send(
+          new SendTaskFailureCommand({
+            taskToken: req.pendingTaskToken,
+            error: 'InvalidPhotoError',
+            cause: err.message,
+          }),
+        );
+        return;
+      }
+      throw err;
+    }
+    return;
+  }
+
   await sfn.send(
     new SendTaskSuccessCommand({
       taskToken: req.pendingTaskToken,
-      output: JSON.stringify({
-        requestId: req.requestId,
-        reply: input.text ?? 'PHOTO',
-        mediaUrl: input.mediaUrl,
-      }),
+      output: JSON.stringify({ requestId: req.requestId, reply: input.text ?? 'PHOTO' }),
     }),
   );
 }
@@ -947,7 +1192,7 @@ export async function handleDriverMessage(input: InboundDriverMessage): Promise<
 ```typescript
 // services/inbound-router/handler.ts
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getAvailableDrivers } from '../shared/dynamo';
+import { getDriverByPhone } from '../shared/dynamo';
 import { handleDonorMessage } from './donorHandler';
 import { handleDriverMessage } from './driverHandler';
 
@@ -975,10 +1220,9 @@ function parseWebhookBody(body: string): ParsedWebhookMessage {
 export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
   const parsed = parseWebhookBody(event.body ?? '{}');
 
-  const drivers = await getAvailableDrivers();
-  const isKnownDriverPhone = drivers.some((d) => d.phone === parsed.fromPhone) || parsed.fromPhone.startsWith('driver:');
+  const driver = await getDriverByPhone(parsed.fromPhone);
 
-  if (isKnownDriverPhone) {
+  if (driver) {
     await handleDriverMessage({ fromPhone: parsed.fromPhone, text: parsed.text, mediaUrl: parsed.mediaUrl });
   } else {
     await handleDonorMessage({
@@ -1019,17 +1263,17 @@ function webhookEvent(fromPhone: string, text: string) {
 }
 
 test('unknown phone routes to donor handler', async () => {
-  mockedDynamo.getAvailableDrivers.mockResolvedValue([]);
+  mockedDynamo.getDriverByPhone.mockResolvedValue(null);
   const res = await handler(webhookEvent('+91999', 'leftover food'));
   expect(mockedDonor.handleDonorMessage).toHaveBeenCalledTimes(1);
   expect(mockedDriver.handleDriverMessage).not.toHaveBeenCalled();
   expect(res.statusCode).toBe(200);
 });
 
-test('known driver phone routes to driver handler', async () => {
-  mockedDynamo.getAvailableDrivers.mockResolvedValue([
-    { driverId: 'd1', phone: '+91driver', name: 'A', currentGeo: { lat: 0, lng: 0 }, status: 'available', lastActive: 'now' },
-  ]);
+test('known driver phone routes to driver handler even when currently busy', async () => {
+  mockedDynamo.getDriverByPhone.mockResolvedValue(
+    { driverId: 'd1', phone: '+91driver', name: 'A', currentGeo: { lat: 0, lng: 0 }, status: 'busy', lastActive: 'now' } as never,
+  );
   await handler(webhookEvent('+91driver', 'ACCEPT'));
   expect(mockedDriver.handleDriverMessage).toHaveBeenCalledTimes(1);
   expect(mockedDonor.handleDonorMessage).not.toHaveBeenCalled();
@@ -1136,8 +1380,8 @@ git commit -m "feat: add NotifyDonor pipeline step"
 - Test: `services/pipeline/matchDriver.test.ts`
 
 **Interfaces:**
-- Consumes: `getAvailableDrivers` (Task 2), `GeoPoint` (Task 1).
-- Produces: `haversineKm(a: GeoPoint, b: GeoPoint): number` (shared/geo.ts, reused by Task 12). `handler(event: {requestId: string; geo: GeoPoint; excludeDriverIds?: string[]}): Promise<{requestId: string; driverId: string | null}>`.
+- Consumes: `getRequest`, `getAvailableDrivers` (Task 2), `GeoPoint` (Task 1). Loads `geo` and `triedDriverIds` from the `FoodRequest` itself rather than from the Step Functions event — every pipeline Lambda in this plan takes only `{requestId}` (plus `taskToken` where relevant) and reads its domain data from DynamoDB, so no field is ever lost crossing a `waitForTaskToken` boundary (see Task 16's note on this).
+- Produces: `haversineKm(a: GeoPoint, b: GeoPoint): number` (shared/geo.ts, reused by Task 12). `handler(event: {requestId: string}): Promise<{requestId: string; driverId: string | null}>`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1169,27 +1413,34 @@ const mockedDynamo = dynamo as jest.Mocked<typeof dynamo>;
 beforeEach(() => jest.clearAllMocks());
 
 test('picks the nearest available driver', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', geo: { lat: 12.9716, lng: 77.6412 } } as never);
   mockedDynamo.getAvailableDrivers.mockResolvedValue([
     { driverId: 'far', phone: 'p1', name: 'Far', currentGeo: { lat: 13.1, lng: 77.9 }, status: 'available', lastActive: 'now' },
     { driverId: 'near', phone: 'p2', name: 'Near', currentGeo: { lat: 12.972, lng: 77.64 }, status: 'available', lastActive: 'now' },
   ] as never);
 
-  const result = await handler({ requestId: 'req-1', geo: { lat: 12.9716, lng: 77.6412 } });
+  const result = await handler({ requestId: 'req-1' });
 
   expect(result.driverId).toBe('near');
 });
 
 test('returns null driverId when no drivers available', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', geo: { lat: 0, lng: 0 } } as never);
   mockedDynamo.getAvailableDrivers.mockResolvedValue([]);
-  const result = await handler({ requestId: 'req-1', geo: { lat: 0, lng: 0 } });
+  const result = await handler({ requestId: 'req-1' });
   expect(result.driverId).toBeNull();
 });
 
-test('excludes driver ids already tried this request', async () => {
+test('excludes driver ids already tried for this request', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({
+    requestId: 'req-1',
+    geo: { lat: 12.9716, lng: 77.6412 },
+    triedDriverIds: ['near'],
+  } as never);
   mockedDynamo.getAvailableDrivers.mockResolvedValue([
     { driverId: 'near', phone: 'p2', name: 'Near', currentGeo: { lat: 12.972, lng: 77.64 }, status: 'available', lastActive: 'now' },
   ] as never);
-  const result = await handler({ requestId: 'req-1', geo: { lat: 12.9716, lng: 77.6412 }, excludeDriverIds: ['near'] });
+  const result = await handler({ requestId: 'req-1' });
   expect(result.driverId).toBeNull();
 });
 ```
@@ -1225,17 +1476,17 @@ function toRad(deg: number): number {
 
 ```typescript
 // services/pipeline/matchDriver.ts
-import { getAvailableDrivers } from '../shared/dynamo';
+import { getRequest, getAvailableDrivers } from '../shared/dynamo';
 import { haversineKm } from '../shared/geo';
-import { GeoPoint } from '../shared/types';
 
-export async function handler(event: {
-  requestId: string;
-  geo: GeoPoint;
-  excludeDriverIds?: string[];
-}): Promise<{ requestId: string; driverId: string | null }> {
+export async function handler(
+  event: { requestId: string },
+): Promise<{ requestId: string; driverId: string | null }> {
+  const req = await getRequest(event.requestId);
+  if (!req) throw new Error(`Request not found: ${event.requestId}`);
+
   const drivers = await getAvailableDrivers();
-  const excluded = new Set(event.excludeDriverIds ?? []);
+  const excluded = new Set(req.triedDriverIds ?? []);
   const candidates = drivers.filter((d) => !excluded.has(d.driverId));
 
   if (candidates.length === 0) {
@@ -1243,8 +1494,8 @@ export async function handler(event: {
   }
 
   const nearest = candidates.reduce((best, d) => {
-    const dist = haversineKm(event.geo, d.currentGeo);
-    const bestDist = haversineKm(event.geo, best.currentGeo);
+    const dist = haversineKm(req.geo, d.currentGeo);
+    const bestDist = haversineKm(req.geo, best.currentGeo);
     return dist < bestDist ? d : best;
   });
 
@@ -1273,7 +1524,7 @@ git commit -m "feat: add haversine distance helper and MatchDriver step"
 - Test: `services/pipeline/notifyDriverAndWait.test.ts`
 
 **Interfaces:**
-- Consumes: `getRequest`, `updateRequest`, `updateDriverStatus` (Task 2), `sendWhatsAppText` (Task 4).
+- Consumes: `getRequest`, `getDriverById`, `updateRequest`, `updateDriverStatus` (Task 2), `sendWhatsAppText` (Task 4). `driverId` is a `Drivers` table key, not a phone number — the driver's phone is looked up via `getDriverById` before any WhatsApp send.
 - Produces: `handler(event: {requestId: string; driverId: string; taskToken: string}): Promise<void>` — invoked by a Step Functions Task state using the `waitForTaskToken` pattern (Task 16); stores `pendingTaskToken`/`pendingStep: 'ACCEPT'` on the Request so Task 6's driver branch can resume it. Does not itself resolve — resolution comes from Task 6 calling `SendTaskSuccess`, or from the state's own timeout/retry handled by Task 16's ASL.
 
 - [ ] **Step 1: Write the failing test**
@@ -1292,17 +1543,21 @@ const mockedWhatsapp = whatsapp as jest.Mocked<typeof whatsapp>;
 
 beforeEach(() => jest.clearAllMocks());
 
-test('notifies the driver and stores the task token for later resume', async () => {
+test('looks up the driver phone by id and notifies the driver, not the raw driverId', async () => {
   mockedDynamo.getRequest.mockResolvedValue({
     requestId: 'req-1',
     qty: '20 plates',
     foodType: 'vada pav',
     geo: { lat: 1, lng: 2 },
   } as never);
+  mockedDynamo.getDriverById.mockResolvedValue({ driverId: 'd1', phone: '+919111111111' } as never);
 
   await handler({ requestId: 'req-1', driverId: 'd1', taskToken: 'tok-abc' });
 
-  expect(mockedWhatsapp.sendWhatsAppText).toHaveBeenCalledTimes(1);
+  expect(mockedWhatsapp.sendWhatsAppText).toHaveBeenCalledWith(
+    '+919111111111',
+    expect.stringContaining('20 plates'),
+  );
   expect(mockedDynamo.updateRequest).toHaveBeenCalledWith('req-1', expect.objectContaining({
     status: 'DRIVER_ASSIGNED',
     driverId: 'd1',
@@ -1310,6 +1565,13 @@ test('notifies the driver and stores the task token for later resume', async () 
     pendingStep: 'ACCEPT',
   }));
   expect(mockedDynamo.updateDriverStatus).toHaveBeenCalledWith('d1', 'busy');
+});
+
+test('throws if the assigned driverId has no matching driver record', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', qty: '1', foodType: 'x', geo: { lat: 0, lng: 0 } } as never);
+  mockedDynamo.getDriverById.mockResolvedValue(null);
+
+  await expect(handler({ requestId: 'req-1', driverId: 'ghost', taskToken: 'tok-abc' })).rejects.toThrow();
 });
 ```
 
@@ -1322,7 +1584,7 @@ Expected: FAIL — `Cannot find module './notifyDriverAndWait'`
 
 ```typescript
 // services/pipeline/notifyDriverAndWait.ts
-import { getRequest, updateRequest, updateDriverStatus } from '../shared/dynamo';
+import { getRequest, getDriverById, updateRequest, updateDriverStatus } from '../shared/dynamo';
 import { sendWhatsAppText } from '../shared/whatsapp';
 
 export async function handler(event: {
@@ -1333,8 +1595,11 @@ export async function handler(event: {
   const req = await getRequest(event.requestId);
   if (!req) throw new Error(`Request not found: ${event.requestId}`);
 
+  const driver = await getDriverById(event.driverId);
+  if (!driver) throw new Error(`Driver not found: ${event.driverId}`);
+
   await sendWhatsAppText(
-    event.driverId,
+    driver.phone,
     `Pickup available: ${req.qty} of ${req.foodType}. Reply ACCEPT or DECLINE within 60 minutes.`,
   );
 
@@ -1385,18 +1650,21 @@ const mockedDynamo = dynamo as jest.Mocked<typeof dynamo>;
 
 beforeEach(() => jest.clearAllMocks());
 
-test('first timeout increments reassignCount, frees driver, does not alert admin', async () => {
-  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', driverId: 'd1', reassignCount: 0 } as never);
+test('first timeout increments reassignCount, frees driver, excludes the timed-out driver, does not alert admin', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', driverId: 'd1', reassignCount: 0, triedDriverIds: [] } as never);
 
   const result = await handler({ requestId: 'req-1' });
 
   expect(mockedDynamo.updateDriverStatus).toHaveBeenCalledWith('d1', 'available');
-  expect(mockedDynamo.updateRequest).toHaveBeenCalledWith('req-1', expect.objectContaining({ reassignCount: 1 }));
+  expect(mockedDynamo.updateRequest).toHaveBeenCalledWith('req-1', expect.objectContaining({
+    reassignCount: 1,
+    triedDriverIds: ['d1'],
+  }));
   expect(result.shouldAlertAdmin).toBe(false);
 });
 
 test('second consecutive timeout triggers admin alert', async () => {
-  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', driverId: 'd2', reassignCount: 1 } as never);
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', driverId: 'd2', reassignCount: 1, triedDriverIds: ['d1'] } as never);
 
   const result = await handler({ requestId: 'req-1' });
 
@@ -1430,9 +1698,13 @@ export async function handler(
 
   const reassignCount = req.reassignCount + 1;
   const shouldAlertAdmin = reassignCount >= MAX_REASSIGNS;
+  const triedDriverIds = req.driverId
+    ? [...(req.triedDriverIds ?? []), req.driverId]
+    : (req.triedDriverIds ?? []);
 
   await updateRequest(event.requestId, {
     reassignCount,
+    triedDriverIds,
     status: shouldAlertAdmin ? 'PENDING_REVIEW' : 'MATCHING',
     pendingTaskToken: undefined,
     pendingStep: undefined,
@@ -1463,27 +1735,40 @@ git commit -m "feat: add driver reassign-on-timeout step, alert admin after 2 fa
 - Test: `services/pipeline/handlePickupPhoto.test.ts`
 
 **Interfaces:**
-- Consumes: `getRequest`, `updateRequest` (Task 2).
-- Produces: `startWait(event: {requestId: string; taskToken: string}): Promise<void>` — stores `pendingStep: 'PICKUP_PHOTO'` (symmetric with Task 9). `handleResult(event: {requestId: string; mediaUrl?: string}): Promise<{requestId: string; valid: boolean; pickupPhotoUrl?: string}>` — called from the ASL step after `SendTaskSuccess` output is consumed, validates the media URL is present and marks `PICKUP_PHOTO_CONFIRMED`; on invalid, throws a named error (`InvalidPhoto`) so Task 16's Retry (max 3) catches it.
+- Consumes: `getRequest`, `getDriverById`, `updateRequest` (Task 2), `sendWhatsAppText` (Task 4).
+- Produces: `startWait(event: {requestId: string; taskToken: string}): Promise<void>` — fetches the request's assigned driver and sends the "please send a pickup photo" WhatsApp prompt, then stores `pendingStep: 'PICKUP_PHOTO'` (symmetric with Task 9). `handleResult(event: {requestId: string; mediaUrl?: string}): Promise<{requestId: string; valid: boolean; pickupPhotoUrl?: string}>` — called directly by Task 6's `driverHandler` (never deployed as its own Lambda) to validate the driver's reply before `SendTaskSuccess`/`SendTaskFailure`; on invalid, throws `InvalidPhotoError` so Task 6 can `SendTaskFailure` with that error name and Task 16's Retry (max 3) re-runs `startWait`. `export const handler = startWait;` is the alias Task 16's CDK uses as this file's deployed Lambda entrypoint — only `startWait` is ever invoked by Step Functions; `handleResult` runs inside the InboundRouter Lambda's process via Task 6's import, never through this file's own Lambda.
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
 // services/pipeline/handlePickupPhoto.test.ts
-import { startWait, handleResult, InvalidPhotoError } from './handlePickupPhoto';
+import { startWait, handleResult, handler, InvalidPhotoError } from './handlePickupPhoto';
 import * as dynamo from '../shared/dynamo';
+import * as whatsapp from '../shared/whatsapp';
 
 jest.mock('../shared/dynamo');
+jest.mock('../shared/whatsapp');
+
 const mockedDynamo = dynamo as jest.Mocked<typeof dynamo>;
+const mockedWhatsapp = whatsapp as jest.Mocked<typeof whatsapp>;
 
 beforeEach(() => jest.clearAllMocks());
 
-test('startWait stores pending step and task token', async () => {
+test('startWait prompts the assigned driver for a photo and stores pending step and task token', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', driverId: 'd1' } as never);
+  mockedDynamo.getDriverById.mockResolvedValue({ driverId: 'd1', phone: '+919111111111' } as never);
+
   await startWait({ requestId: 'req-1', taskToken: 'tok-1' });
+
+  expect(mockedWhatsapp.sendWhatsAppText).toHaveBeenCalledWith('+919111111111', expect.stringContaining('photo'));
   expect(mockedDynamo.updateRequest).toHaveBeenCalledWith('req-1', {
     pendingTaskToken: 'tok-1',
     pendingStep: 'PICKUP_PHOTO',
   });
+});
+
+test('handler is an alias for startWait, used as the deployed Lambda entrypoint', () => {
+  expect(handler).toBe(startWait);
 });
 
 test('handleResult with a valid media url confirms the photo', async () => {
@@ -1509,11 +1794,21 @@ Expected: FAIL — `Cannot find module './handlePickupPhoto'`
 
 ```typescript
 // services/pipeline/handlePickupPhoto.ts
-import { updateRequest } from '../shared/dynamo';
+import { getRequest, getDriverById, updateRequest } from '../shared/dynamo';
+import { sendWhatsAppText } from '../shared/whatsapp';
 
 export class InvalidPhotoError extends Error {}
 
 export async function startWait(event: { requestId: string; taskToken: string }): Promise<void> {
+  const req = await getRequest(event.requestId);
+  if (!req) throw new Error(`Request not found: ${event.requestId}`);
+  if (req.driverId) {
+    const driver = await getDriverById(req.driverId);
+    if (driver) {
+      await sendWhatsAppText(driver.phone, 'Please send a photo of the pickup to confirm.');
+    }
+  }
+
   await updateRequest(event.requestId, {
     pendingTaskToken: event.taskToken,
     pendingStep: 'PICKUP_PHOTO',
@@ -1536,6 +1831,8 @@ export async function handleResult(
 
   return { requestId: event.requestId, valid: true, pickupPhotoUrl: event.mediaUrl };
 }
+
+export const handler = startWait;
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -1559,8 +1856,8 @@ git commit -m "feat: add pickup photo wait/confirm step with retry-on-invalid"
 - Test: `services/pipeline/matchFridge.test.ts`
 
 **Interfaces:**
-- Consumes: `getFridges` (Task 2), `haversineKm` (Task 8), `GeoPoint` (Task 1).
-- Produces: `handler(event: {requestId: string; geo: GeoPoint}): Promise<{requestId: string; fridgeId: string | null}>`.
+- Consumes: `getRequest`, `getFridges`, `updateRequest` (Task 2), `haversineKm` (Task 8). Loads `geo` from the `FoodRequest` itself, same pattern as Task 8.
+- Produces: `handler(event: {requestId: string}): Promise<{requestId: string; fridgeId: string | null}>` — persists `fridgeId` and `status: 'FRIDGE_MATCHED'` on the Request when a fridge is found, so the match is recorded even though nothing downstream needs `fridgeId` passed through the state input.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1574,21 +1871,28 @@ const mockedDynamo = dynamo as jest.Mocked<typeof dynamo>;
 
 beforeEach(() => jest.clearAllMocks());
 
-test('picks the nearest fridge to the pickup point', async () => {
+test('picks the nearest fridge to the pickup point and persists the match', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', geo: { lat: 12.9716, lng: 77.6412 } } as never);
   mockedDynamo.getFridges.mockResolvedValue([
     { fridgeId: 'far', name: 'Far', address: 'x', geo: { lat: 13.1, lng: 77.9 }, capacity: 10 },
     { fridgeId: 'near', name: 'Near', address: 'y', geo: { lat: 12.935, lng: 77.6245 }, capacity: 10 },
   ] as never);
 
-  const result = await handler({ requestId: 'req-1', geo: { lat: 12.9716, lng: 77.6412 } });
+  const result = await handler({ requestId: 'req-1' });
 
   expect(result.fridgeId).toBe('near');
+  expect(mockedDynamo.updateRequest).toHaveBeenCalledWith('req-1', {
+    fridgeId: 'near',
+    status: 'FRIDGE_MATCHED',
+  });
 });
 
-test('returns null when no fridges configured', async () => {
+test('returns null when no fridges configured, does not update the request', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', geo: { lat: 0, lng: 0 } } as never);
   mockedDynamo.getFridges.mockResolvedValue([]);
-  const result = await handler({ requestId: 'req-1', geo: { lat: 0, lng: 0 } });
+  const result = await handler({ requestId: 'req-1' });
   expect(result.fridgeId).toBeNull();
+  expect(mockedDynamo.updateRequest).not.toHaveBeenCalled();
 });
 ```
 
@@ -1601,20 +1905,25 @@ Expected: FAIL — `Cannot find module './matchFridge'`
 
 ```typescript
 // services/pipeline/matchFridge.ts
-import { getFridges } from '../shared/dynamo';
+import { getRequest, getFridges, updateRequest } from '../shared/dynamo';
 import { haversineKm } from '../shared/geo';
-import { GeoPoint } from '../shared/types';
 
 export async function handler(
-  event: { requestId: string; geo: GeoPoint },
+  event: { requestId: string },
 ): Promise<{ requestId: string; fridgeId: string | null }> {
+  const req = await getRequest(event.requestId);
+  if (!req) throw new Error(`Request not found: ${event.requestId}`);
+
   const fridges = await getFridges();
   if (fridges.length === 0) {
     return { requestId: event.requestId, fridgeId: null };
   }
   const nearest = fridges.reduce((best, f) =>
-    haversineKm(event.geo, f.geo) < haversineKm(event.geo, best.geo) ? f : best,
+    haversineKm(req.geo, f.geo) < haversineKm(req.geo, best.geo) ? f : best,
   );
+
+  await updateRequest(event.requestId, { fridgeId: nearest.fridgeId, status: 'FRIDGE_MATCHED' });
+
   return { requestId: event.requestId, fridgeId: nearest.fridgeId };
 }
 ```
@@ -1638,30 +1947,45 @@ git commit -m "feat: add MatchFridge pipeline step"
 **Files:**
 - Create: `services/pipeline/handleFridgePhoto.ts`
 - Test: `services/pipeline/handleFridgePhoto.test.ts`
+- Modify: `services/inbound-router/driverHandler.ts` (close the gap Task 6 flagged — wire in real photo validation now that both `handlePickupPhoto` and `handleFridgePhoto` exist)
+- Test: `services/inbound-router/driverHandler.test.ts` (append photo-validation cases)
 
 **Interfaces:**
-- Consumes: `updateRequest` (Task 2). Mirrors Task 11 exactly for the second photo.
-- Produces: `startWait(event: {requestId: string; taskToken: string}): Promise<void>`, `handleResult(event: {requestId: string; mediaUrl?: string}): Promise<{requestId: string; valid: boolean; fridgePhotoUrl?: string}>` — same `InvalidPhotoError` contract as Task 11, reused by Task 16's Retry config.
+- Consumes: `getRequest`, `getDriverById`, `updateRequest` (Task 2), `sendWhatsAppText` (Task 4), `InvalidPhotoError` (Task 11). Mirrors Task 11 exactly for the second photo, including the driver-prompt-on-start and the `handler = startWait` alias.
+- Produces: `startWait(event: {requestId: string; taskToken: string}): Promise<void>`, `handleResult(event: {requestId: string; mediaUrl?: string}): Promise<{requestId: string; valid: boolean; fridgePhotoUrl?: string}>` — same `InvalidPhotoError` contract as Task 11, reused by Task 16's Retry config. This task's final step also modifies `driverHandler.ts` to import `handleResult` from both this file and Task 11's, since both now exist — see the dedicated steps below. `export const handler = startWait;` for Task 16's CDK wiring.
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
 // services/pipeline/handleFridgePhoto.test.ts
-import { startWait, handleResult } from './handleFridgePhoto';
+import { startWait, handleResult, handler } from './handleFridgePhoto';
 import { InvalidPhotoError } from './handlePickupPhoto';
 import * as dynamo from '../shared/dynamo';
+import * as whatsapp from '../shared/whatsapp';
 
 jest.mock('../shared/dynamo');
+jest.mock('../shared/whatsapp');
+
 const mockedDynamo = dynamo as jest.Mocked<typeof dynamo>;
+const mockedWhatsapp = whatsapp as jest.Mocked<typeof whatsapp>;
 
 beforeEach(() => jest.clearAllMocks());
 
-test('startWait stores pending fridge-photo step', async () => {
+test('startWait prompts the assigned driver and stores pending fridge-photo step', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', driverId: 'd1' } as never);
+  mockedDynamo.getDriverById.mockResolvedValue({ driverId: 'd1', phone: '+919111111111' } as never);
+
   await startWait({ requestId: 'req-1', taskToken: 'tok-2' });
+
+  expect(mockedWhatsapp.sendWhatsAppText).toHaveBeenCalledWith('+919111111111', expect.stringContaining('fridge'));
   expect(mockedDynamo.updateRequest).toHaveBeenCalledWith('req-1', {
     pendingTaskToken: 'tok-2',
     pendingStep: 'FRIDGE_PHOTO',
   });
+});
+
+test('handler is an alias for startWait', () => {
+  expect(handler).toBe(startWait);
 });
 
 test('handleResult with valid media url confirms fridge drop', async () => {
@@ -1687,10 +2011,20 @@ Expected: FAIL — `Cannot find module './handleFridgePhoto'`
 
 ```typescript
 // services/pipeline/handleFridgePhoto.ts
-import { updateRequest } from '../shared/dynamo';
+import { getRequest, getDriverById, updateRequest } from '../shared/dynamo';
+import { sendWhatsAppText } from '../shared/whatsapp';
 import { InvalidPhotoError } from './handlePickupPhoto';
 
 export async function startWait(event: { requestId: string; taskToken: string }): Promise<void> {
+  const req = await getRequest(event.requestId);
+  if (!req) throw new Error(`Request not found: ${event.requestId}`);
+  if (req.driverId) {
+    const driver = await getDriverById(req.driverId);
+    if (driver) {
+      await sendWhatsAppText(driver.phone, 'Please send a photo of the food stored in the fridge to confirm.');
+    }
+  }
+
   await updateRequest(event.requestId, {
     pendingTaskToken: event.taskToken,
     pendingStep: 'FRIDGE_PHOTO',
@@ -1713,6 +2047,8 @@ export async function handleResult(
 
   return { requestId: event.requestId, valid: true, fridgePhotoUrl: event.mediaUrl };
 }
+
+export const handler = startWait;
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -1720,11 +2056,136 @@ export async function handleResult(
 Run: `npx jest services/pipeline/handleFridgePhoto.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Write the failing test for the driverHandler.ts photo-validation wiring**
+
+Append to `services/inbound-router/driverHandler.test.ts` (replacing the Task 6 test that only checked a photo reply "resumes" the step without validating it):
+
+```typescript
+// append to services/inbound-router/driverHandler.test.ts
+import { SendTaskFailureCommand } from '@aws-sdk/client-sfn';
+
+test('valid pickup photo reply validates via handleResult then resolves the task token', async () => {
+  mockedDynamo.findActiveRequestByDriverPhone.mockResolvedValue({
+    requestId: 'req-1',
+    pendingTaskToken: 'token-456',
+    pendingStep: 'PICKUP_PHOTO',
+    status: 'DRIVER_ACCEPTED',
+  } as never);
+  sfnMock.on(SendTaskSuccessCommand).resolves({});
+
+  await handleDriverMessage({ fromPhone: '+91driver', mediaUrl: 'media:abc' });
+
+  expect(sfnMock.commandCalls(SendTaskSuccessCommand)).toHaveLength(1);
+});
+
+test('missing-media pickup photo reply fails the task token with InvalidPhotoError for Retry', async () => {
+  mockedDynamo.findActiveRequestByDriverPhone.mockResolvedValue({
+    requestId: 'req-1',
+    pendingTaskToken: 'token-456',
+    pendingStep: 'PICKUP_PHOTO',
+    status: 'DRIVER_ACCEPTED',
+  } as never);
+  sfnMock.on(SendTaskFailureCommand).resolves({});
+
+  await handleDriverMessage({ fromPhone: '+91driver', mediaUrl: '' });
+
+  const calls = sfnMock.commandCalls(SendTaskFailureCommand);
+  expect(calls).toHaveLength(1);
+  expect(calls[0].args[0].input.error).toBe('InvalidPhotoError');
+});
+```
+
+Note: the Task 6 test `'pickup photo reply with media resumes the waiting PICKUP_PHOTO step'` still passes unchanged — a valid photo still resolves via `SendTaskSuccess`, just via `handleResult` now instead of a raw pass-through.
+
+- [ ] **Step 6: Run test to verify it fails**
+
+Run: `npx jest services/inbound-router/driverHandler.test.ts`
+Expected: FAIL — the missing-media case still calls `SendTaskSuccess` today, because `driverHandler.ts` doesn't validate yet.
+
+- [ ] **Step 7: Modify driverHandler.ts to validate photo replies**
+
+Replace `services/inbound-router/driverHandler.ts`'s body with:
+
+```typescript
+// services/inbound-router/driverHandler.ts
+import { SFNClient, SendTaskSuccessCommand, SendTaskFailureCommand } from '@aws-sdk/client-sfn';
+import { findActiveRequestByDriverPhone } from '../shared/dynamo';
+import { sendWhatsAppText } from '../shared/whatsapp';
+import { handleResult as handlePickupResult, InvalidPhotoError } from '../pipeline/handlePickupPhoto';
+import { handleResult as handleFridgeResult } from '../pipeline/handleFridgePhoto';
+
+const sfn = new SFNClient({});
+
+export interface InboundDriverMessage {
+  fromPhone: string;
+  text?: string;
+  mediaUrl?: string;
+}
+
+export async function handleDriverMessage(input: InboundDriverMessage): Promise<void> {
+  const req = await findActiveRequestByDriverPhone(input.fromPhone);
+
+  if (!req || !req.pendingTaskToken || !req.pendingStep) {
+    await sendWhatsAppText(
+      input.fromPhone,
+      "We don't have a pending pickup request for you right now.",
+    );
+    return;
+  }
+
+  const isPhotoStep = req.pendingStep === 'PICKUP_PHOTO' || req.pendingStep === 'FRIDGE_PHOTO';
+  const gotPhoto = !!input.mediaUrl;
+
+  if (isPhotoStep !== gotPhoto) {
+    const expected = isPhotoStep ? 'a photo' : 'ACCEPT or DECLINE';
+    await sendWhatsAppText(input.fromPhone, `We're waiting for ${expected} on this pickup. Please resend.`);
+    return;
+  }
+
+  if (isPhotoStep) {
+    const validate = req.pendingStep === 'PICKUP_PHOTO' ? handlePickupResult : handleFridgeResult;
+    try {
+      const result = await validate({ requestId: req.requestId, mediaUrl: input.mediaUrl });
+      await sfn.send(
+        new SendTaskSuccessCommand({ taskToken: req.pendingTaskToken, output: JSON.stringify(result) }),
+      );
+    } catch (err) {
+      if (err instanceof InvalidPhotoError) {
+        await sendWhatsAppText(input.fromPhone, "That didn't look like a valid photo — please resend.");
+        await sfn.send(
+          new SendTaskFailureCommand({
+            taskToken: req.pendingTaskToken,
+            error: 'InvalidPhotoError',
+            cause: err.message,
+          }),
+        );
+        return;
+      }
+      throw err;
+    }
+    return;
+  }
+
+  await sfn.send(
+    new SendTaskSuccessCommand({
+      taskToken: req.pendingTaskToken,
+      output: JSON.stringify({ requestId: req.requestId, reply: input.text ?? 'PHOTO' }),
+    }),
+  );
+}
+```
+
+- [ ] **Step 8: Run test to verify it passes**
+
+Run: `npx jest services/inbound-router/driverHandler.test.ts`
+Expected: PASS (all cases from Task 6 plus the two added here)
+
+- [ ] **Step 9: Commit**
 
 ```bash
-git add services/pipeline/handleFridgePhoto.ts services/pipeline/handleFridgePhoto.test.ts
-git commit -m "feat: add fridge-drop photo wait/confirm step"
+git add services/pipeline/handleFridgePhoto.ts services/pipeline/handleFridgePhoto.test.ts \
+  services/inbound-router/driverHandler.ts services/inbound-router/driverHandler.test.ts
+git commit -m "feat: add fridge-drop photo step, wire real photo validation into driverHandler"
 ```
 
 ---
@@ -1954,8 +2415,8 @@ git commit -m "feat: add CDK DataStack for DynamoDB tables and photo bucket"
 - Modify: `infra/bin/app.ts` (wire `PipelineStack` after `DataStack`)
 
 **Interfaces:**
-- Consumes: `DataStack` tables/bucket (Task 15); Lambda handlers from `services/inbound-router/handler.ts` (Task 6), `services/pipeline/*.ts` (Tasks 7-14).
-- Produces: `PipelineStack` — exports `webhookApi: RestApi`, `stateMachine: StateMachine` for later stacks to reference ARNs if needed.
+- Consumes: `DataStack` tables/bucket (Task 15); Lambda handlers from `services/inbound-router/handler.ts` (Task 6), `services/pipeline/*.ts` (Tasks 7-14, including the `handler = startWait` aliases from Tasks 11/13).
+- Produces: `PipelineStack` — exports `webhookApi: RestApi`, `stateMachine: StateMachine` for later stacks to reference ARNs if needed. Grants `InboundRouterFn` both `grantStartExecution` (Task 5's `StartExecutionCommand`) and `grantTaskResponse` (Task 6's `SendTaskSuccess`/`SendTaskFailure`) on the state machine — both directions of the task-token handshake need their own grant.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2108,7 +2569,7 @@ export class PipelineStack extends Stack {
         .otherwise(matchDriverStep),
     );
 
-    notifyDriverAndWaitStep.addCatch(reassignLoop, { errors: ['States.Timeout'] });
+    notifyDriverAndWaitStep.addCatch(reassignLoop, { errors: ['States.Timeout'], resultPath: '$.error' });
 
     const definition = notifyDonorStep
       .next(matchDriverStep)
@@ -2127,6 +2588,7 @@ export class PipelineStack extends Stack {
     dlq.grantSendMessages(inboundRouterFn);
     inboundRouterFn.addEnvironment('WHATSAPP_DLQ_URL', dlq.queueUrl);
     this.stateMachine.grantStartExecution(inboundRouterFn);
+    this.stateMachine.grantTaskResponse(inboundRouterFn);
     inboundRouterFn.addEnvironment('STATE_MACHINE_ARN', this.stateMachine.stateMachineArn);
 
     this.webhookApi = new RestApi(this, 'WhatsAppWebhookApi');
@@ -2147,7 +2609,7 @@ git add infra/lib/pipeline-stack.ts infra/lib/pipeline-stack.test.ts infra/bin/a
 git commit -m "feat: add CDK PipelineStack wiring Step Functions state machine, webhook API, DLQ"
 ```
 
-Note: `InboundRouter`'s message-create path (Task 6's `handler.ts`) must call `StartExecutionCommand` on `STATE_MACHINE_ARN` once a `Request` reaches `MATCHING` — add that call in this task's wiring step before moving on, since it's the glue between Task 6 and this state machine.
+Note: Task 5's `donorHandler.ts` already calls `StartExecutionCommand` against `process.env.STATE_MACHINE_ARN` on the confident-classification path — this stack's `grantStartExecution(inboundRouterFn)` and `addEnvironment('STATE_MACHINE_ARN', ...)` calls above are what make that call work once deployed; no further wiring is needed on either side.
 
 ---
 
@@ -2290,9 +2752,11 @@ Expected: `donor_offer` creates a `Request` that progresses through the state ma
 - Create: `infra/lib/admin-api-stack.ts`
 - Create: `services/admin-api/listRequests.ts`
 - Create: `services/admin-api/overrideAssign.ts`
+- Modify: `services/shared/dynamo.ts` (append `scanAllRequests`)
 - Test: `infra/lib/auth-stack.test.ts`
 - Test: `services/admin-api/listRequests.test.ts`
 - Test: `services/admin-api/overrideAssign.test.ts`
+- Test: `services/shared/dynamo.test.ts` (append a case for `scanAllRequests`)
 
 **Interfaces:**
 - Consumes: `DataStack.requestsTable`/`driversTable` (Task 15), `FoodRequest`/`Driver` (Task 1).
@@ -2316,6 +2780,19 @@ test('creates a Cognito user pool and app client', () => {
 ```
 
 ```typescript
+// append to services/shared/dynamo.test.ts
+import { scanAllRequests } from './dynamo';
+// (ScanCommand and ddbMock are already imported/declared earlier in this file from Task 2)
+
+test('scanAllRequests returns every request in the table', async () => {
+  ddbMock.on(ScanCommand).resolves({ Items: [{ requestId: 'req-1', status: 'MATCHING' }] });
+  const result = await scanAllRequests();
+  expect(result).toHaveLength(1);
+  expect(result[0].requestId).toBe('req-1');
+});
+```
+
+```typescript
 // services/admin-api/listRequests.test.ts
 import { handler } from './listRequests';
 import * as dynamo from '../shared/dynamo';
@@ -2326,7 +2803,7 @@ const mockedDynamo = dynamo as jest.Mocked<typeof dynamo>;
 beforeEach(() => jest.clearAllMocks());
 
 test('returns all requests from the scan', async () => {
-  mockedDynamo.scanAllRequests = jest.fn().mockResolvedValue([{ requestId: 'req-1', status: 'MATCHING' }]);
+  mockedDynamo.scanAllRequests.mockResolvedValue([{ requestId: 'req-1', status: 'MATCHING' }] as never);
   const result = await handler();
   expect(result.requests).toHaveLength(1);
 });
@@ -2483,7 +2960,7 @@ Expected: PASS
 git add infra/lib/auth-stack.ts infra/lib/auth-stack.test.ts infra/lib/admin-api-stack.ts \
   services/admin-api/listRequests.ts services/admin-api/overrideAssign.ts \
   services/admin-api/listRequests.test.ts services/admin-api/overrideAssign.test.ts \
-  services/shared/dynamo.ts
+  services/shared/dynamo.ts services/shared/dynamo.test.ts
 git commit -m "feat: add Cognito admin auth and admin REST API (list + override assign)"
 ```
 
@@ -2948,3 +3425,19 @@ git commit -m "feat: wire all stacks together, document deploy and demo steps"
 - **Placeholder scan:** no TBD/TODO left in any step; the only deferred values (`CLASSIFIER_AGENT_ID`, webhook callback URL) are genuine deploy-time infra outputs, not missing design decisions, and are called out explicitly in Task 22's README.
 - **Type consistency:** `FoodRequest`, `Driver`, `Fridge`, `ClassifierResult`, `RequestStatus` defined once in Task 1 and imported everywhere else; `pendingTaskToken`/`pendingStep` introduced in Task 1 and used consistently by Tasks 6, 9, 11, 13.
 - **Review Focus coverage:** all five items have an owning task with a test (see inline references in the Review Focus section above).
+
+## Preflight Correction Round (before Task 1 dispatch)
+
+A cross-task scan before execution found six real defects, all fixed in the plan text above before any implementer was dispatched:
+
+1. Task 9 sent WhatsApp to `event.driverId` (a table key, not a phone number) instead of the driver's phone — fixed by adding `getDriverById` (Task 2) and looking up `driver.phone`.
+2. Tasks 11/13 exported `startWait`/`handleResult`, but Task 16's CDK assumed a generic `.handler` entrypoint for every Lambda — fixed by adding `export const handler = startWait;` to both files.
+3. `handleResult` (the photo validation + retry-on-invalid logic) was never invoked by the state machine or by `driverHandler` — Task 6 forwarded raw replies straight to `SendTaskSuccess`, so the "3 retries then admin flag" constraint could never trigger. Fixed by having Task 6's `driverHandler` call `handleResult` and choose `SendTaskSuccess`/`SendTaskFailure` accordingly — moved to Task 13 (see #6) since it needs both Task 11's and Task 13's exports to exist.
+4. `handler.ts`'s driver-vs-donor routing used `getAvailableDrivers()` (available only), so a driver already busy on an assigned job would misroute their ACCEPT/photo reply to the spam classifier. Fixed by adding `getDriverByPhone` (scans regardless of status).
+5. `MatchDriver` and `MatchFridge` took `geo` as a Step Functions event field, but a `waitForTaskToken` boundary's "output" is whatever `SendTaskSuccess` sends — there was no path for `geo` to survive that boundary. Fixed by having every pipeline Lambda take only `{requestId}` and load its domain data from DynamoDB directly; `excludeDriverIds` became a persisted `triedDriverIds` field on the Request for the same reason.
+6. Task 6 originally imported `handlePickupPhoto`/`handleFridgePhoto` (Tasks 11/13), which don't exist yet at Task 6's point in the build order. Fixed by having Task 6 ship a working-but-not-yet-validating `driverHandler`, with Task 13 modifying it once both dependencies exist.
+7. `addCatch` on the `NotifyDriverAndWait` wait state replaces the entire state input with the error object by default, which would have dropped `requestId` before `ReassignDriver` ran. Fixed with `resultPath: '$.error'` to preserve the original input.
+8. `MatchFridge` computed `fridgeId` but never persisted it, and nothing ever wrote the spec's `FRIDGE_MATCHED` status. Fixed by having `MatchFridge` call `updateRequest` directly.
+9. Tasks 11/13's `startWait` never actually prompted the driver to send a photo — fixed by sending a WhatsApp message in `startWait` itself.
+10. Task 16 left `InboundRouter`'s `StartExecutionCommand` call as a vague trailing note instead of a specified task deliverable, and never granted `SendTaskSuccess`/`SendTaskFailure` permissions to `InboundRouterFn` at all. Fixed by making it a concrete part of Task 5 (with its own test) and adding `grantTaskResponse` alongside the existing `grantStartExecution`.
+11. Task 18's Files block omitted the `Modify: services/shared/dynamo.ts` entry even though its own Step 3 appends `scanAllRequests` to that file — fixed by adding the entry and a concrete appended test.
