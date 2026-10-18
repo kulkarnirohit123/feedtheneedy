@@ -1,0 +1,52 @@
+// services/shared/dynamo.test.ts
+import { mockClient } from 'aws-sdk-client-mock';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { putRequest, getRequest, getDriverByPhone, getDriverById } from './dynamo';
+
+const ddbMock = mockClient(DynamoDBDocumentClient);
+
+beforeEach(() => ddbMock.reset());
+
+test('putRequest writes item, getRequest reads it back', async () => {
+  ddbMock.on(PutCommand).resolves({});
+  await putRequest({
+    requestId: 'req-1',
+    donorPhone: '+91999',
+    qty: '20 plates',
+    foodType: 'vada pav',
+    geo: { lat: 1, lng: 2 },
+    status: 'RECEIVED',
+    createdAt: 'now',
+    updatedAt: 'now',
+    reassignCount: 0,
+  });
+  expect(ddbMock.commandCalls(PutCommand)).toHaveLength(1);
+
+  ddbMock.on(GetCommand).resolves({ Item: { requestId: 'req-1', status: 'RECEIVED' } });
+  const result = await getRequest('req-1');
+  expect(result?.requestId).toBe('req-1');
+});
+
+test('getRequest returns null when item missing', async () => {
+  ddbMock.on(GetCommand).resolves({});
+  const result = await getRequest('missing');
+  expect(result).toBeNull();
+});
+
+test('getDriverByPhone finds a driver regardless of busy/available status', async () => {
+  ddbMock.on(ScanCommand).resolves({ Items: [{ driverId: 'd1', phone: '+91driver', status: 'busy' }] });
+  const result = await getDriverByPhone('+91driver');
+  expect(result?.driverId).toBe('d1');
+});
+
+test('getDriverByPhone returns null for an unknown phone', async () => {
+  ddbMock.on(ScanCommand).resolves({ Items: [] });
+  const result = await getDriverByPhone('+91unknown');
+  expect(result).toBeNull();
+});
+
+test('getDriverById reads a driver by id', async () => {
+  ddbMock.on(GetCommand).resolves({ Item: { driverId: 'driver-1', phone: '+91999' } });
+  const result = await getDriverById('driver-1');
+  expect(result?.phone).toBe('+91999');
+});
