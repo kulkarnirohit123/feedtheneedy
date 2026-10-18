@@ -1,7 +1,7 @@
 // services/shared/dynamo.test.ts
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
-import { putRequest, getRequest, getDriverByPhone, getDriverById } from './dynamo';
+import { putRequest, getRequest, getDriverByPhone, getDriverById, findActiveRequestByDriverPhone } from './dynamo';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
@@ -49,4 +49,28 @@ test('getDriverById reads a driver by id', async () => {
   ddbMock.on(GetCommand).resolves({ Item: { driverId: 'driver-1', phone: '+91999' } });
   const result = await getDriverById('driver-1');
   expect(result?.phone).toBe('+91999');
+});
+
+test('findActiveRequestByDriverPhone resolves phone to driverId, then finds the active request', async () => {
+  ddbMock.on(ScanCommand, { TableName: 'Drivers' }).resolves({ Items: [{ driverId: 'd1', phone: '+91driver' }] });
+  ddbMock.on(ScanCommand, { TableName: 'Requests' }).resolves({
+    Items: [{ requestId: 'req-1', driverId: 'd1', status: 'DRIVER_ASSIGNED' }],
+  });
+  const result = await findActiveRequestByDriverPhone('+91driver');
+  expect(result?.requestId).toBe('req-1');
+});
+
+test('findActiveRequestByDriverPhone returns null when the phone matches no driver', async () => {
+  ddbMock.on(ScanCommand, { TableName: 'Drivers' }).resolves({ Items: [] });
+  const result = await findActiveRequestByDriverPhone('+91unknown');
+  expect(result).toBeNull();
+});
+
+test('findActiveRequestByDriverPhone ignores a COMPLETE request for that driver', async () => {
+  ddbMock.on(ScanCommand, { TableName: 'Drivers' }).resolves({ Items: [{ driverId: 'd1', phone: '+91driver' }] });
+  ddbMock.on(ScanCommand, { TableName: 'Requests' }).resolves({
+    Items: [{ requestId: 'req-old', driverId: 'd1', status: 'COMPLETE' }],
+  });
+  const result = await findActiveRequestByDriverPhone('+91driver');
+  expect(result).toBeNull();
 });

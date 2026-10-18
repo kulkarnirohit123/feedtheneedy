@@ -4,7 +4,6 @@ import {
   GetCommand,
   PutCommand,
   UpdateCommand,
-  QueryCommand,
   ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { FoodRequest, Driver, Fridge } from './types';
@@ -51,12 +50,14 @@ export async function updateRequest(requestId: string, patch: Partial<FoodReques
 }
 
 export async function findActiveRequestByDriverPhone(phone: string): Promise<FoodRequest | null> {
+  const driver = await getDriverByPhone(phone);
+  if (!driver) return null;
+
   const res = await client.send(
-    new QueryCommand({
+    new ScanCommand({
       TableName: REQUESTS_TABLE,
-      IndexName: 'byDriverPhone',
-      KeyConditionExpression: 'donorPhoneIsDriverPhoneIndexKey = :p',
-      ExpressionAttributeValues: { ':p': phone },
+      FilterExpression: 'driverId = :d',
+      ExpressionAttributeValues: { ':d': driver.driverId },
     }),
   );
   const items = (res.Items as FoodRequest[]) ?? [];
