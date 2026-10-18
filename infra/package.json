@@ -4,7 +4,10 @@
   "private": true,
   "scripts": {
     "build": "tsc",
+    "build:services": "tsc -p ../services/tsconfig.json",
+    "pretest": "npm run build:services",
     "test": "jest",
+    "synth": "npm run build:services && cdk synth",
     "cdk": "cdk"
   },
   "dependencies": {
