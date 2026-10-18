@@ -1,5 +1,5 @@
 import { mockClient } from 'aws-sdk-client-mock';
-import { SFNClient, SendTaskSuccessCommand } from '@aws-sdk/client-sfn';
+import { SFNClient, SendTaskSuccessCommand, SendTaskFailureCommand } from '@aws-sdk/client-sfn';
 import { handleDriverMessage } from './driverHandler';
 import * as dynamo from '../shared/dynamo';
 import * as whatsapp from '../shared/whatsapp';
@@ -82,7 +82,7 @@ test('driver reply with no active request logs and replies gracefully, no crash'
   );
 });
 
-test('pickup photo reply with media resumes the waiting PICKUP_PHOTO step', async () => {
+test('valid pickup photo reply validates via handleResult then resolves the task token', async () => {
   mockedDynamo.findActiveRequestByDriverPhone.mockResolvedValue({
     requestId: 'req-1',
     pendingTaskToken: 'token-456',
@@ -94,11 +94,20 @@ test('pickup photo reply with media resumes the waiting PICKUP_PHOTO step', asyn
   await handleDriverMessage({ fromPhone: '+91driver', mediaUrl: 'media:abc' });
 
   expect(sfnMock.commandCalls(SendTaskSuccessCommand)).toHaveLength(1);
-  const call = sfnMock.commandCalls(SendTaskSuccessCommand)[0];
-  expect(call.args[0].input.taskToken).toBe('token-456');
-  expect(JSON.parse(call.args[0].input.output as string)).toEqual({
+});
+
+test('missing-media pickup photo reply fails the task token with InvalidPhotoError for Retry', async () => {
+  mockedDynamo.findActiveRequestByDriverPhone.mockResolvedValue({
     requestId: 'req-1',
-    reply: 'PHOTO',
-    mediaUrl: 'media:abc',
-  });
+    pendingTaskToken: 'token-456',
+    pendingStep: 'PICKUP_PHOTO',
+    status: 'DRIVER_ACCEPTED',
+  } as never);
+  sfnMock.on(SendTaskFailureCommand).resolves({});
+
+  await handleDriverMessage({ fromPhone: '+91driver', mediaUrl: '' });
+
+  const calls = sfnMock.commandCalls(SendTaskFailureCommand);
+  expect(calls).toHaveLength(1);
+  expect(calls[0].args[0].input.error).toBe('InvalidPhotoError');
 });
