@@ -226,7 +226,7 @@ git commit -m "feat: scaffold repo, define shared domain types"
 
 **Interfaces:**
 - Consumes: `FoodRequest`, `Driver`, `Fridge` from `services/shared/types.ts` (Task 1).
-- Produces: `putRequest(req: FoodRequest): Promise<void>`, `getRequest(requestId: string): Promise<FoodRequest | null>`, `updateRequest(requestId: string, patch: Partial<FoodRequest>): Promise<void>`, `findActiveRequestByDriverPhone(phone: string): Promise<FoodRequest | null>`, `putSpamLog(entry: {msgId: string; phone: string; rawText: string; verdict: string; confidence: number}): Promise<void>`, `putDonationHistory(req: FoodRequest): Promise<void>`, `getAvailableDrivers(): Promise<Driver[]>`, `getDriverByPhone(phone: string): Promise<Driver | null>` (scans ALL drivers regardless of available/busy status — this is how Task 6 tells a driver reply apart from a donor message even when the driver is currently busy on an assigned job), `getDriverById(driverId: string): Promise<Driver | null>` (used wherever a Lambda has a `driverId` from a `FoodRequest` and needs that driver's phone number to send a WhatsApp message — a request never stores the driver's phone directly), `getFridges(): Promise<Fridge[]>`, `updateDriverStatus(driverId: string, status: 'available'|'busy'): Promise<void>`, `hasProcessedMessage(messageId: string): Promise<boolean>`, `markMessageProcessed(messageId: string): Promise<void>`. Every later Lambda task imports from here — no task talks to DynamoDB directly.
+- Produces: `putRequest(req: FoodRequest): Promise<void>`, `getRequest(requestId: string): Promise<FoodRequest | null>`, `updateRequest(requestId: string, patch: Partial<FoodRequest>): Promise<void>`, `findActiveRequestByDriverPhone(phone: string): Promise<FoodRequest | null>` (resolves the phone to a `driverId` via `getDriverByPhone` first, then scans `Requests` for that `driverId` with an active, non-terminal status — there is no GSI on donor phone, since a `FoodRequest` never stores the driver's phone, only `driverId`), `putSpamLog(entry: {msgId: string; phone: string; rawText: string; verdict: string; confidence: number}): Promise<void>`, `putDonationHistory(req: FoodRequest): Promise<void>`, `getAvailableDrivers(): Promise<Driver[]>`, `getDriverByPhone(phone: string): Promise<Driver | null>` (scans ALL drivers regardless of available/busy status — this is how Task 6 tells a driver reply apart from a donor message even when the driver is currently busy on an assigned job), `getDriverById(driverId: string): Promise<Driver | null>` (used wherever a Lambda has a `driverId` from a `FoodRequest` and needs that driver's phone number to send a WhatsApp message — a request never stores the driver's phone directly), `getFridges(): Promise<Fridge[]>`, `updateDriverStatus(driverId: string, status: 'available'|'busy'): Promise<void>`, `hasProcessedMessage(messageId: string): Promise<boolean>`, `markMessageProcessed(messageId: string): Promise<void>`. Every later Lambda task imports from here — no task talks to DynamoDB directly.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -234,7 +234,7 @@ git commit -m "feat: scaffold repo, define shared domain types"
 // services/shared/dynamo.test.ts
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
-import { putRequest, getRequest, getDriverByPhone, getDriverById } from './dynamo';
+import { putRequest, getRequest, getDriverByPhone, getDriverById, findActiveRequestByDriverPhone } from './dynamo';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
@@ -283,6 +283,30 @@ test('getDriverById reads a driver by id', async () => {
   const result = await getDriverById('driver-1');
   expect(result?.phone).toBe('+91999');
 });
+
+test('findActiveRequestByDriverPhone resolves phone to driverId, then finds the active request', async () => {
+  ddbMock.on(ScanCommand, { TableName: 'Drivers' }).resolves({ Items: [{ driverId: 'd1', phone: '+91driver' }] });
+  ddbMock.on(ScanCommand, { TableName: 'Requests' }).resolves({
+    Items: [{ requestId: 'req-1', driverId: 'd1', status: 'DRIVER_ASSIGNED' }],
+  });
+  const result = await findActiveRequestByDriverPhone('+91driver');
+  expect(result?.requestId).toBe('req-1');
+});
+
+test('findActiveRequestByDriverPhone returns null when the phone matches no driver', async () => {
+  ddbMock.on(ScanCommand, { TableName: 'Drivers' }).resolves({ Items: [] });
+  const result = await findActiveRequestByDriverPhone('+91unknown');
+  expect(result).toBeNull();
+});
+
+test('findActiveRequestByDriverPhone ignores a COMPLETE request for that driver', async () => {
+  ddbMock.on(ScanCommand, { TableName: 'Drivers' }).resolves({ Items: [{ driverId: 'd1', phone: '+91driver' }] });
+  ddbMock.on(ScanCommand, { TableName: 'Requests' }).resolves({
+    Items: [{ requestId: 'req-old', driverId: 'd1', status: 'COMPLETE' }],
+  });
+  const result = await findActiveRequestByDriverPhone('+91driver');
+  expect(result).toBeNull();
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -300,7 +324,6 @@ import {
   GetCommand,
   PutCommand,
   UpdateCommand,
-  QueryCommand,
   ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { FoodRequest, Driver, Fridge } from './types';
@@ -347,12 +370,14 @@ export async function updateRequest(requestId: string, patch: Partial<FoodReques
 }
 
 export async function findActiveRequestByDriverPhone(phone: string): Promise<FoodRequest | null> {
+  const driver = await getDriverByPhone(phone);
+  if (!driver) return null;
+
   const res = await client.send(
-    new QueryCommand({
+    new ScanCommand({
       TableName: REQUESTS_TABLE,
-      IndexName: 'byDriverPhone',
-      KeyConditionExpression: 'donorPhoneIsDriverPhoneIndexKey = :p',
-      ExpressionAttributeValues: { ':p': phone },
+      FilterExpression: 'driverId = :d',
+      ExpressionAttributeValues: { ':d': driver.driverId },
     }),
   );
   const items = (res.Items as FoodRequest[]) ?? [];
@@ -2329,10 +2354,6 @@ export class DataStack extends Stack {
       partitionKey: { name: 'requestId', type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.DESTROY,
-    });
-    this.requestsTable.addGlobalSecondaryIndex({
-      indexName: 'byDriverPhone',
-      partitionKey: { name: 'donorPhoneIsDriverPhoneIndexKey', type: AttributeType.STRING },
     });
 
     this.driversTable = new Table(this, 'DriversTable', {
