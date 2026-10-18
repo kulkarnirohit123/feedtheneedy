@@ -34,6 +34,15 @@ export async function handleDriverMessage(input: InboundDriverMessage): Promise<
     return;
   }
 
+  // Plain text chatter at a photo step (e.g. "ACCEPT" or "on my way") is a harmless
+  // no-op re-prompt, not an invalid-photo attempt — WhatsApp payloads are text XOR
+  // media, so input.text being present means this was never a photo attempt at all.
+  // Only a genuinely empty/missing media reply (no text either) should burn a retry.
+  if (isPhotoStep && !gotPhoto && input.text) {
+    await sendWhatsAppText(input.fromPhone, "We're waiting for a photo on this pickup. Please resend.");
+    return;
+  }
+
   if (isPhotoStep) {
     const validate = req.pendingStep === 'PICKUP_PHOTO' ? handlePickupResult : handleFridgeResult;
     try {

@@ -65,6 +65,7 @@ test('ACCEPT text arriving while waiting on PICKUP_PHOTO is rejected with a re-p
   await handleDriverMessage({ fromPhone: '+91driver', text: 'ACCEPT' });
 
   expect(sfnMock.commandCalls(SendTaskSuccessCommand)).toHaveLength(0);
+  expect(sfnMock.commandCalls(SendTaskFailureCommand)).toHaveLength(0);
   expect(mockedSendWhatsAppText).toHaveBeenCalledWith(
     '+91driver',
     expect.stringMatching(/photo/i),
@@ -94,6 +95,34 @@ test('valid pickup photo reply validates via handleResult then resolves the task
   await handleDriverMessage({ fromPhone: '+91driver', mediaUrl: 'media:abc' });
 
   expect(sfnMock.commandCalls(SendTaskSuccessCommand)).toHaveLength(1);
+  const call = sfnMock.commandCalls(SendTaskSuccessCommand)[0];
+  expect(call.args[0].input.taskToken).toBe('token-456');
+  expect(JSON.parse(call.args[0].input.output as string)).toEqual({
+    requestId: 'req-1',
+    valid: true,
+    pickupPhotoUrl: 'media:abc',
+  });
+});
+
+test('valid fridge photo reply validates via handleFridgeResult then resolves the task token', async () => {
+  mockedDynamo.findActiveRequestByDriverPhone.mockResolvedValue({
+    requestId: 'req-1',
+    pendingTaskToken: 'token-789',
+    pendingStep: 'FRIDGE_PHOTO',
+    status: 'FRIDGE_MATCHED',
+  } as never);
+  sfnMock.on(SendTaskSuccessCommand).resolves({});
+
+  await handleDriverMessage({ fromPhone: '+91driver', mediaUrl: 'media:xyz' });
+
+  expect(sfnMock.commandCalls(SendTaskSuccessCommand)).toHaveLength(1);
+  const call = sfnMock.commandCalls(SendTaskSuccessCommand)[0];
+  expect(call.args[0].input.taskToken).toBe('token-789');
+  expect(JSON.parse(call.args[0].input.output as string)).toEqual({
+    requestId: 'req-1',
+    valid: true,
+    fridgePhotoUrl: 'media:xyz',
+  });
 });
 
 test('missing-media pickup photo reply fails the task token with InvalidPhotoError for Retry', async () => {
