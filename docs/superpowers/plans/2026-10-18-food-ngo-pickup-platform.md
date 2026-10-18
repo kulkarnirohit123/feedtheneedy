@@ -226,15 +226,15 @@ git commit -m "feat: scaffold repo, define shared domain types"
 
 **Interfaces:**
 - Consumes: `FoodRequest`, `Driver`, `Fridge` from `services/shared/types.ts` (Task 1).
-- Produces: `putRequest(req: FoodRequest): Promise<void>`, `getRequest(requestId: string): Promise<FoodRequest | null>`, `updateRequest(requestId: string, patch: Partial<FoodRequest>): Promise<void>`, `findActiveRequestByDriverPhone(phone: string): Promise<FoodRequest | null>` (resolves the phone to a `driverId` via `getDriverByPhone` first, then scans `Requests` for that `driverId` with an active, non-terminal status — there is no GSI on donor phone, since a `FoodRequest` never stores the driver's phone, only `driverId`), `putSpamLog(entry: {msgId: string; phone: string; rawText: string; verdict: string; confidence: number}): Promise<void>`, `putDonationHistory(req: FoodRequest): Promise<void>`, `getAvailableDrivers(): Promise<Driver[]>`, `getDriverByPhone(phone: string): Promise<Driver | null>` (scans ALL drivers regardless of available/busy status — this is how Task 6 tells a driver reply apart from a donor message even when the driver is currently busy on an assigned job), `getDriverById(driverId: string): Promise<Driver | null>` (used wherever a Lambda has a `driverId` from a `FoodRequest` and needs that driver's phone number to send a WhatsApp message — a request never stores the driver's phone directly), `getFridges(): Promise<Fridge[]>`, `updateDriverStatus(driverId: string, status: 'available'|'busy'): Promise<void>`, `hasProcessedMessage(messageId: string): Promise<boolean>`, `markMessageProcessed(messageId: string): Promise<void>`. Every later Lambda task imports from here — no task talks to DynamoDB directly.
+- Produces: `putRequest(req: FoodRequest): Promise<void>`, `getRequest(requestId: string): Promise<FoodRequest | null>`, `updateRequest(requestId: string, patch: Partial<FoodRequest>): Promise<void>` (a patch field set to `undefined` becomes a DynamoDB `REMOVE` clause, not a `SET` — the document client throws on `undefined` in a `SET` value, and callers like Task 10/11/13 pass `undefined` specifically to clear `pendingTaskToken`/`pendingStep`, which must actually remove the attribute, not silently leave the stale value in place), `findActiveRequestByDriverPhone(phone: string): Promise<FoodRequest | null>` (resolves the phone to a `driverId` via `getDriverByPhone` first, then scans `Requests` for that `driverId` with an active, non-terminal status — there is no GSI on donor phone, since a `FoodRequest` never stores the driver's phone, only `driverId`), `putSpamLog(entry: {msgId: string; phone: string; rawText: string; verdict: string; confidence: number}): Promise<void>`, `putDonationHistory(req: FoodRequest): Promise<void>`, `getAvailableDrivers(): Promise<Driver[]>`, `getDriverByPhone(phone: string): Promise<Driver | null>` (scans ALL drivers regardless of available/busy status — this is how Task 6 tells a driver reply apart from a donor message even when the driver is currently busy on an assigned job), `getDriverById(driverId: string): Promise<Driver | null>` (used wherever a Lambda has a `driverId` from a `FoodRequest` and needs that driver's phone number to send a WhatsApp message — a request never stores the driver's phone directly), `getFridges(): Promise<Fridge[]>`, `updateDriverStatus(driverId: string, status: 'available'|'busy'): Promise<void>`, `hasProcessedMessage(messageId: string): Promise<boolean>`, `markMessageProcessed(messageId: string): Promise<void>`. Every later Lambda task imports from here — no task talks to DynamoDB directly.
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
 // services/shared/dynamo.test.ts
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
-import { putRequest, getRequest, getDriverByPhone, getDriverById, findActiveRequestByDriverPhone } from './dynamo';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { putRequest, getRequest, getDriverByPhone, getDriverById, findActiveRequestByDriverPhone, updateRequest } from './dynamo';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
@@ -307,6 +307,29 @@ test('findActiveRequestByDriverPhone ignores a COMPLETE request for that driver'
   const result = await findActiveRequestByDriverPhone('+91driver');
   expect(result).toBeNull();
 });
+
+test('updateRequest builds a REMOVE clause for undefined fields instead of a SET with an undefined value', async () => {
+  ddbMock.on(UpdateCommand).resolves({});
+  await updateRequest('req-1', { status: 'MATCHING', pendingTaskToken: undefined, pendingStep: undefined });
+
+  const call = ddbMock.commandCalls(UpdateCommand)[0];
+  const input = call.args[0].input;
+  expect(input.UpdateExpression).toContain('SET');
+  expect(input.UpdateExpression).toContain('REMOVE');
+  // the SET clause carries only the defined field's value; the removed fields
+  // must not appear anywhere in ExpressionAttributeValues
+  expect(Object.values(input.ExpressionAttributeValues ?? {})).toEqual(['MATCHING']);
+});
+
+test('updateRequest omits ExpressionAttributeValues entirely when every patch field is undefined', async () => {
+  ddbMock.on(UpdateCommand).resolves({});
+  await updateRequest('req-1', { pendingTaskToken: undefined, pendingStep: undefined });
+
+  const call = ddbMock.commandCalls(UpdateCommand)[0];
+  const input = call.args[0].input;
+  expect(input.UpdateExpression).toBe('REMOVE #f0, #f1');
+  expect(input.ExpressionAttributeValues).toBeUndefined();
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -349,22 +372,36 @@ export async function getRequest(requestId: string): Promise<FoodRequest | null>
 }
 
 export async function updateRequest(requestId: string, patch: Partial<FoodRequest>): Promise<void> {
-  const keys = Object.keys(patch);
+  const keys = Object.keys(patch) as (keyof FoodRequest)[];
   if (keys.length === 0) return;
+
   const names: Record<string, string> = {};
   const values: Record<string, unknown> = {};
-  const sets = keys.map((k, i) => {
+  const setClauses: string[] = [];
+  const removeClauses: string[] = [];
+
+  keys.forEach((k, i) => {
     names[`#f${i}`] = k;
-    values[`:v${i}`] = (patch as Record<string, unknown>)[k];
-    return `#f${i} = :v${i}`;
+    const v = (patch as Record<string, unknown>)[k];
+    if (v === undefined) {
+      removeClauses.push(`#f${i}`);
+    } else {
+      values[`:v${i}`] = v;
+      setClauses.push(`#f${i} = :v${i}`);
+    }
   });
+
+  const expressionParts: string[] = [];
+  if (setClauses.length > 0) expressionParts.push(`SET ${setClauses.join(', ')}`);
+  if (removeClauses.length > 0) expressionParts.push(`REMOVE ${removeClauses.join(', ')}`);
+
   await client.send(
     new UpdateCommand({
       TableName: REQUESTS_TABLE,
       Key: { requestId },
-      UpdateExpression: `SET ${sets.join(', ')}`,
+      UpdateExpression: expressionParts.join(' '),
       ExpressionAttributeNames: names,
-      ExpressionAttributeValues: values,
+      ...(setClauses.length > 0 ? { ExpressionAttributeValues: values } : {}),
     }),
   );
 }
