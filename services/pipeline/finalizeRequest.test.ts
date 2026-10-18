@@ -13,6 +13,10 @@ test('marks the request COMPLETE, frees the driver, writes history', async () =>
 
   expect(mockedDynamo.updateRequest).toHaveBeenCalledWith('req-1', { status: 'COMPLETE' });
   expect(mockedDynamo.updateDriverStatus).toHaveBeenCalledWith('d1', 'available');
-  expect(mockedDynamo.putDonationHistory).toHaveBeenCalledTimes(1);
+  expect(mockedDynamo.putDonationHistory).toHaveBeenCalledWith({
+    requestId: 'req-1',
+    driverId: 'd1',
+    status: 'COMPLETE',
+  });
   expect(result.status).toBe('COMPLETE');
 });
