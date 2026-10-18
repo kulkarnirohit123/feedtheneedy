@@ -29,6 +29,8 @@ test('second consecutive timeout triggers admin alert', async () => {
     reassignCount: 2,
     triedDriverIds: ['d1', 'd2'],
     status: 'PENDING_REVIEW',
+    pendingTaskToken: undefined,
+    pendingStep: undefined,
   }));
   expect(result.shouldAlertAdmin).toBe(true);
   expect(result.reassignCount).toBe(2);
