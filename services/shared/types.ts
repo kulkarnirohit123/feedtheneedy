@@ -28,7 +28,7 @@ export interface FoodRequest {
   updatedAt: string;
   pickupPhotoUrl?: string;
   fridgePhotoUrl?: string;
-  reassignCount?: number;
+  reassignCount: number;
   pendingTaskToken?: string;
   pendingStep?: 'ACCEPT' | 'PICKUP_PHOTO' | 'FRIDGE_PHOTO';
   lastInboundMessageId?: string;
