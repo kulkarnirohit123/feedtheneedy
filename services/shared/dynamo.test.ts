@@ -1,7 +1,7 @@
 // services/shared/dynamo.test.ts
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
-import { putRequest, getRequest, getDriverByPhone, getDriverById, findActiveRequestByDriverPhone } from './dynamo';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { putRequest, getRequest, getDriverByPhone, getDriverById, findActiveRequestByDriverPhone, updateRequest } from './dynamo';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
@@ -73,4 +73,25 @@ test('findActiveRequestByDriverPhone ignores a COMPLETE request for that driver'
   });
   const result = await findActiveRequestByDriverPhone('+91driver');
   expect(result).toBeNull();
+});
+
+test('updateRequest builds a REMOVE clause for undefined fields instead of a SET with an undefined value', async () => {
+  ddbMock.on(UpdateCommand).resolves({});
+  await updateRequest('req-1', { status: 'MATCHING', pendingTaskToken: undefined, pendingStep: undefined });
+
+  const call = ddbMock.commandCalls(UpdateCommand)[0];
+  const input = call.args[0].input;
+  expect(input.UpdateExpression).toContain('SET');
+  expect(input.UpdateExpression).toContain('REMOVE');
+  expect(Object.values(input.ExpressionAttributeValues ?? {})).toEqual(['MATCHING']);
+});
+
+test('updateRequest omits ExpressionAttributeValues entirely when every patch field is undefined', async () => {
+  ddbMock.on(UpdateCommand).resolves({});
+  await updateRequest('req-1', { pendingTaskToken: undefined, pendingStep: undefined });
+
+  const call = ddbMock.commandCalls(UpdateCommand)[0];
+  const input = call.args[0].input;
+  expect(input.UpdateExpression).toBe('REMOVE #f0, #f1');
+  expect(input.ExpressionAttributeValues).toBeUndefined();
 });

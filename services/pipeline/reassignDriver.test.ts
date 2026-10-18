@@ -24,6 +24,12 @@ test('second consecutive timeout triggers admin alert', async () => {
 
   const result = await handler({ requestId: 'req-1' });
 
+  expect(mockedDynamo.updateDriverStatus).toHaveBeenCalledWith('d2', 'available');
+  expect(mockedDynamo.updateRequest).toHaveBeenCalledWith('req-1', expect.objectContaining({
+    reassignCount: 2,
+    triedDriverIds: ['d1', 'd2'],
+    status: 'PENDING_REVIEW',
+  }));
   expect(result.shouldAlertAdmin).toBe(true);
   expect(result.reassignCount).toBe(2);
 });

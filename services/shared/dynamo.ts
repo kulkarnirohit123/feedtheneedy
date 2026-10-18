@@ -29,22 +29,36 @@ export async function getRequest(requestId: string): Promise<FoodRequest | null>
 }
 
 export async function updateRequest(requestId: string, patch: Partial<FoodRequest>): Promise<void> {
-  const keys = Object.keys(patch);
+  const keys = Object.keys(patch) as (keyof FoodRequest)[];
   if (keys.length === 0) return;
+
   const names: Record<string, string> = {};
   const values: Record<string, unknown> = {};
-  const sets = keys.map((k, i) => {
+  const setClauses: string[] = [];
+  const removeClauses: string[] = [];
+
+  keys.forEach((k, i) => {
     names[`#f${i}`] = k;
-    values[`:v${i}`] = (patch as Record<string, unknown>)[k];
-    return `#f${i} = :v${i}`;
+    const v = (patch as Record<string, unknown>)[k];
+    if (v === undefined) {
+      removeClauses.push(`#f${i}`);
+    } else {
+      values[`:v${i}`] = v;
+      setClauses.push(`#f${i} = :v${i}`);
+    }
   });
+
+  const expressionParts: string[] = [];
+  if (setClauses.length > 0) expressionParts.push(`SET ${setClauses.join(', ')}`);
+  if (removeClauses.length > 0) expressionParts.push(`REMOVE ${removeClauses.join(', ')}`);
+
   await client.send(
     new UpdateCommand({
       TableName: REQUESTS_TABLE,
       Key: { requestId },
-      UpdateExpression: `SET ${sets.join(', ')}`,
+      UpdateExpression: expressionParts.join(' '),
       ExpressionAttributeNames: names,
-      ExpressionAttributeValues: values,
+      ...(setClauses.length > 0 ? { ExpressionAttributeValues: values } : {}),
     }),
   );
 }
