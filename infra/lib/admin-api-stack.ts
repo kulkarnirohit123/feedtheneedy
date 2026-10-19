@@ -2,7 +2,7 @@ import * as path from 'path';
 import { Stack, StackProps, Duration } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { Function, Runtime, Code } from 'aws-cdk-lib/aws-lambda';
-import { RestApi, LambdaIntegration, CognitoUserPoolsAuthorizer, AuthorizationType } from 'aws-cdk-lib/aws-apigateway';
+import { RestApi, LambdaIntegration, CognitoUserPoolsAuthorizer, AuthorizationType, Cors } from 'aws-cdk-lib/aws-apigateway';
 import { DataStack } from './data-stack';
 import { AuthStack } from './auth-stack';
 
@@ -39,7 +39,12 @@ export class AdminApiStack extends Stack {
     });
     data.requestsTable.grantReadWriteData(overrideFn);
 
-    this.api = new RestApi(this, 'AdminApi');
+    this.api = new RestApi(this, 'AdminApi', {
+      defaultCorsPreflightOptions: {
+        allowOrigins: Cors.ALL_ORIGINS,
+        allowHeaders: [...Cors.DEFAULT_HEADERS, 'Authorization'],
+      },
+    });
     const authorizer = new CognitoUserPoolsAuthorizer(this, 'AdminAuthorizer', {
       cognitoUserPools: [auth.userPool],
     });
