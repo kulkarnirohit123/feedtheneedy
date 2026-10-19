@@ -2704,7 +2704,7 @@ Expected: `donor_offer` creates a `Request` that progresses through the state ma
 
 **Interfaces:**
 - Consumes: `DataStack.requestsTable`/`driversTable` (Task 15), `FoodRequest`/`Driver` (Task 1).
-- Produces: `AuthStack` (exports `userPool`, `userPoolClient`). `listRequests.handler(): Promise<{requests: FoodRequest[]}>`. `overrideAssign.handler(event: {requestId: string; driverId: string}): Promise<{requestId: string; driverId: string}>` — used by Task 19's dashboard.
+- Produces: `AuthStack` (exports `userPool`, `userPoolClient`). `listRequests.handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult>` and `overrideAssign.handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult>` — both proxy-shaped (`{statusCode, body}`), matching `admin-api-stack.ts`'s default-proxy `LambdaIntegration` (API Gateway rejects a non-`{statusCode,body}` response from a proxy integration with a 502, regardless of what the handler's own return type claims) and Task 6's `inbound-router/handler.ts`, the one other Lambda in this plan already behind a proxy `LambdaIntegration`. `overrideAssign` parses `{requestId, driverId}` from `JSON.parse(event.body)`. Used by Task 19's dashboard via `fetch` against the real HTTP API.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2746,10 +2746,11 @@ const mockedDynamo = dynamo as jest.Mocked<typeof dynamo>;
 
 beforeEach(() => jest.clearAllMocks());
 
-test('returns all requests from the scan', async () => {
+test('returns all requests from the scan as a proxy-shaped response', async () => {
   mockedDynamo.scanAllRequests.mockResolvedValue([{ requestId: 'req-1', status: 'MATCHING' }] as never);
-  const result = await handler();
-  expect(result.requests).toHaveLength(1);
+  const result = await handler({} as never);
+  expect(result.statusCode).toBe(200);
+  expect(JSON.parse(result.body).requests).toHaveLength(1);
 });
 ```
 
@@ -2763,10 +2764,12 @@ const mockedDynamo = dynamo as jest.Mocked<typeof dynamo>;
 
 beforeEach(() => jest.clearAllMocks());
 
-test('reassigns a request to the given driver', async () => {
-  const result = await handler({ requestId: 'req-1', driverId: 'driver-2' });
+test('parses the proxy event body and reassigns a request to the given driver', async () => {
+  const event = { body: JSON.stringify({ requestId: 'req-1', driverId: 'driver-2' }) } as never;
+  const result = await handler(event);
   expect(mockedDynamo.updateRequest).toHaveBeenCalledWith('req-1', { driverId: 'driver-2' });
-  expect(result).toEqual({ requestId: 'req-1', driverId: 'driver-2' });
+  expect(result.statusCode).toBe(200);
+  expect(JSON.parse(result.body)).toEqual({ requestId: 'req-1', driverId: 'driver-2' });
 });
 ```
 
@@ -2815,29 +2818,30 @@ export async function scanAllRequests(): Promise<FoodRequest[]> {
 
 ```typescript
 // services/admin-api/listRequests.ts
+import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { scanAllRequests } from '../shared/dynamo';
-import { FoodRequest } from '../shared/types';
 
-export async function handler(): Promise<{ requests: FoodRequest[] }> {
+export async function handler(_event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
   const requests = await scanAllRequests();
-  return { requests };
+  return { statusCode: 200, body: JSON.stringify({ requests }) };
 }
 ```
 
 ```typescript
 // services/admin-api/overrideAssign.ts
+import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { updateRequest } from '../shared/dynamo';
 
-export async function handler(
-  event: { requestId: string; driverId: string },
-): Promise<{ requestId: string; driverId: string }> {
-  await updateRequest(event.requestId, { driverId: event.driverId });
-  return { requestId: event.requestId, driverId: event.driverId };
+export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
+  const { requestId, driverId } = JSON.parse(event.body ?? '{}');
+  await updateRequest(requestId, { driverId });
+  return { statusCode: 200, body: JSON.stringify({ requestId, driverId }) };
 }
 ```
 
 ```typescript
 // infra/lib/admin-api-stack.ts
+import * as path from 'path';
 import { Stack, StackProps, Duration } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { Function, Runtime, Code } from 'aws-cdk-lib/aws-lambda';
@@ -2860,7 +2864,7 @@ export class AdminApiStack extends Stack {
     const listFn = new Function(this, 'ListRequestsFn', {
       runtime: Runtime.NODEJS_20_X,
       handler: 'admin-api/listRequests.handler',
-      code: Code.fromAsset('../services/dist'),
+      code: Code.fromAsset(path.join(__dirname, '..', '..', 'services', 'dist')),
       environment: { REQUESTS_TABLE: data.requestsTable.tableName },
       timeout: Duration.seconds(10),
     });
@@ -2869,7 +2873,7 @@ export class AdminApiStack extends Stack {
     const overrideFn = new Function(this, 'OverrideAssignFn', {
       runtime: Runtime.NODEJS_20_X,
       handler: 'admin-api/overrideAssign.handler',
-      code: Code.fromAsset('../services/dist'),
+      code: Code.fromAsset(path.join(__dirname, '..', '..', 'services', 'dist')),
       environment: { REQUESTS_TABLE: data.requestsTable.tableName },
       timeout: Duration.seconds(10),
     });
