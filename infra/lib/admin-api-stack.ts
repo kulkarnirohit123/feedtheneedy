@@ -42,7 +42,7 @@ export class AdminApiStack extends Stack {
     this.api = new RestApi(this, 'AdminApi', {
       defaultCorsPreflightOptions: {
         allowOrigins: Cors.ALL_ORIGINS,
-        allowHeaders: [...Cors.DEFAULT_HEADERS, 'Authorization'],
+        allowHeaders: Cors.DEFAULT_HEADERS,
       },
     });
     const authorizer = new CognitoUserPoolsAuthorizer(this, 'AdminAuthorizer', {

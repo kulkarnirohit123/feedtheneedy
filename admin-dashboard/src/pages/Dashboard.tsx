@@ -3,8 +3,9 @@ import { fetchRequests, overrideAssign, FoodRequest, SessionExpiredError } from 
 import { signOut } from '../auth';
 
 const FALLBACK_DRIVER_ID = 'driver-2';
+const NOOP = () => {};
 
-export function Dashboard({ onSignedOut = () => {} }: { onSignedOut?: () => void }) {
+export function Dashboard({ onSignedOut = NOOP }: { onSignedOut?: () => void }) {
   const [requests, setRequests] = useState<FoodRequest[]>([]);
 
   useEffect(() => {
