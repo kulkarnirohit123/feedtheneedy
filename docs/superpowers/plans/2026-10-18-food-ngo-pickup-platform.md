@@ -167,6 +167,7 @@ export interface FoodRequest {
   pendingStep?: 'ACCEPT' | 'PICKUP_PHOTO' | 'FRIDGE_PHOTO';
   lastInboundMessageId?: string;
   triedDriverIds?: string[];
+  month?: string;
 }
 
 export interface Driver {
@@ -2146,7 +2147,7 @@ git commit -m "feat: add fridge-drop photo step, wire real photo validation into
 
 **Interfaces:**
 - Consumes: `getRequest`, `updateRequest`, `updateDriverStatus`, `putDonationHistory` (Task 2).
-- Produces: `handler(event: {requestId: string}): Promise<{requestId: string; status: 'COMPLETE'}>` — final Task state in Task 16's state machine.
+- Produces: `handler(event: {requestId: string}): Promise<{requestId: string; status: 'COMPLETE'}>` — final Task state in Task 16's state machine. Stamps `month` (`YYYY-MM`, completion time) onto the `DonationHistory` record — Task 15's `byMonthStatus` GSI partitions on this exact attribute, and nothing else in the plan ever writes it, so Task 20's monthly report query would silently return zero rows without this.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2160,7 +2161,7 @@ const mockedDynamo = dynamo as jest.Mocked<typeof dynamo>;
 
 beforeEach(() => jest.clearAllMocks());
 
-test('marks the request COMPLETE, frees the driver, writes history', async () => {
+test('marks the request COMPLETE, frees the driver, writes history with a month attribute', async () => {
   mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', driverId: 'd1' } as never);
 
   const result = await handler({ requestId: 'req-1' });
@@ -2168,6 +2169,9 @@ test('marks the request COMPLETE, frees the driver, writes history', async () =>
   expect(mockedDynamo.updateRequest).toHaveBeenCalledWith('req-1', { status: 'COMPLETE' });
   expect(mockedDynamo.updateDriverStatus).toHaveBeenCalledWith('d1', 'available');
   expect(mockedDynamo.putDonationHistory).toHaveBeenCalledTimes(1);
+  const historyArg = mockedDynamo.putDonationHistory.mock.calls[0][0];
+  expect(historyArg.status).toBe('COMPLETE');
+  expect(historyArg.month).toMatch(/^\d{4}-\d{2}$/);
   expect(result.status).toBe('COMPLETE');
 });
 ```
@@ -2195,7 +2199,8 @@ export async function handler(
     await updateDriverStatus(req.driverId, 'available');
   }
 
-  await putDonationHistory({ ...req, status: 'COMPLETE' });
+  const month = new Date().toISOString().slice(0, 7);
+  await putDonationHistory({ ...req, status: 'COMPLETE', month });
 
   return { requestId: event.requestId, status: 'COMPLETE' };
 }
@@ -3203,12 +3208,16 @@ Note: the `RequestDetail.tsx` driver-picker (replacing `FALLBACK_DRIVER_ID` with
 **Files:**
 - Create: `services/reporting/monthlyReport.ts`
 - Create: `infra/lib/reporting-stack.ts`
+- Modify: `services/shared/types.ts` (add optional `month?: string` to `FoodRequest` — see note below)
+- Modify: `services/pipeline/finalizeRequest.ts` (stamp `month` onto the `DonationHistory` write)
 - Test: `services/reporting/monthlyReport.test.ts`
 - Test: `infra/lib/reporting-stack.test.ts`
+- Test: `services/pipeline/finalizeRequest.test.ts` (strengthen the existing assertion to check `month`)
 
 **Interfaces:**
 - Consumes: `DonationHistory` table scan/query (new wrapper added here), `DataStack.donationHistoryTable`/`photosBucket` (Task 15).
 - Produces: `handler(event: {month: string}): Promise<{month: string; totalRequests: number; csvS3Key: string}>`. `ReportingStack` (EventBridge rule, monthly cron, invoking the Lambda).
+- **Why the Modify entries:** Task 15's `byMonthStatus` GSI partitions `DonationHistory` on a `month` attribute, but Task 14's `FinalizeRequest` (already complete) never wrote one — this task's `QueryCommand` against that GSI would always return zero rows without it. Fixed here by stamping `month` (`YYYY-MM`, completion time) in `finalizeRequest.ts`'s `putDonationHistory` call, which requires widening `FoodRequest` with an optional `month` field so the spread-plus-field object literal type-checks.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3297,6 +3306,7 @@ export async function handler(
 
 ```typescript
 // infra/lib/reporting-stack.ts
+import * as path from 'path';
 import { Stack, StackProps, Duration } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { Function, Runtime, Code } from 'aws-cdk-lib/aws-lambda';
@@ -3316,7 +3326,7 @@ export class ReportingStack extends Stack {
     const reportFn = new Function(this, 'MonthlyReportFn', {
       runtime: Runtime.NODEJS_20_X,
       handler: 'reporting/monthlyReport.handler',
-      code: Code.fromAsset('../services/dist'),
+      code: Code.fromAsset(path.join(__dirname, '..', '..', 'services', 'dist')),
       environment: {
         DONATION_HISTORY_TABLE: data.donationHistoryTable.tableName,
         REPORTS_BUCKET: data.photosBucket.bucketName,
