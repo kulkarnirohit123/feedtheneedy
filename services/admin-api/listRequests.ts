@@ -1,7 +1,7 @@
+import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { scanAllRequests } from '../shared/dynamo';
-import { FoodRequest } from '../shared/types';
 
-export async function handler(): Promise<{ requests: FoodRequest[] }> {
+export async function handler(_event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
   const requests = await scanAllRequests();
-  return { requests };
+  return { statusCode: 200, body: JSON.stringify({ requests }) };
 }

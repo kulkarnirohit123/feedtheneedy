@@ -1,8 +1,8 @@
+import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { updateRequest } from '../shared/dynamo';
 
-export async function handler(
-  event: { requestId: string; driverId: string },
-): Promise<{ requestId: string; driverId: string }> {
-  await updateRequest(event.requestId, { driverId: event.driverId });
-  return { requestId: event.requestId, driverId: event.driverId };
+export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
+  const { requestId, driverId } = JSON.parse(event.body ?? '{}');
+  await updateRequest(requestId, { driverId });
+  return { statusCode: 200, body: JSON.stringify({ requestId, driverId }) };
 }
