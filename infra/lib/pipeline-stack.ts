@@ -16,6 +16,7 @@ interface PipelineStackProps extends StackProps {
 export class PipelineStack extends Stack {
   public readonly webhookApi: RestApi;
   public readonly stateMachine: sfn.StateMachine;
+  public readonly whatsAppDlq: Queue;
 
   constructor(scope: Construct, id: string, props: PipelineStackProps) {
     super(scope, id, props);
@@ -180,9 +181,9 @@ export class PipelineStack extends Stack {
       timeout: Duration.hours(6),
     });
 
-    const dlq = new Queue(this, 'WhatsAppSendDlq', { retentionPeriod: Duration.days(14) });
-    dlq.grantSendMessages(inboundRouterFn);
-    inboundRouterFn.addEnvironment('WHATSAPP_DLQ_URL', dlq.queueUrl);
+    this.whatsAppDlq = new Queue(this, 'WhatsAppSendDlq', { retentionPeriod: Duration.days(14) });
+    this.whatsAppDlq.grantSendMessages(inboundRouterFn);
+    inboundRouterFn.addEnvironment('WHATSAPP_DLQ_URL', this.whatsAppDlq.queueUrl);
     this.stateMachine.grantStartExecution(inboundRouterFn);
     this.stateMachine.grantTaskResponse(inboundRouterFn);
     // Belt-and-suspenders: AWS's service-authorization reference for Step Functions shows
