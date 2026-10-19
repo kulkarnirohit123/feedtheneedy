@@ -11,6 +11,6 @@
     "outDir": "./dist",
     "rootDir": "."
   },
-  "include": ["services/**/*", "infra/**/*", "admin-dashboard/**/*"],
+  "include": ["services/**/*", "infra/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }
