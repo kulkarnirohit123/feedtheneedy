@@ -3216,7 +3216,7 @@ Note: the `RequestDetail.tsx` driver-picker (replacing `FALLBACK_DRIVER_ID` with
 
 **Interfaces:**
 - Consumes: `DonationHistory` table scan/query (new wrapper added here), `DataStack.donationHistoryTable`/`photosBucket` (Task 15).
-- Produces: `handler(event: {month: string}): Promise<{month: string; totalRequests: number; csvS3Key: string}>`. `ReportingStack` (EventBridge rule, monthly cron, invoking the Lambda).
+- Produces: `handler(event: {month?: string}): Promise<{month: string; totalRequests: number; csvS3Key: string}>` — `month` is optional because the EventBridge-scheduled invocation (the only trigger this task's `Rule` ever supplies) carries no custom input at all, just the standard AWS Scheduled Event payload with no `month` field; the handler defaults to the previous calendar month (computed at invocation time) when `event.month` is absent, matching the cron firing at 02:00 on the 1st to report on the month that just ended. A caller (the demo script, a manual test invoke) can still pass an explicit `month` to target any period. `ReportingStack` (EventBridge rule, monthly cron, invoking the Lambda).
 - **Why the Modify entries:** Task 15's `byMonthStatus` GSI partitions `DonationHistory` on a `month` attribute, but Task 14's `FinalizeRequest` (already complete) never wrote one — this task's `QueryCommand` against that GSI would always return zero rows without it. Fixed here by stamping `month` (`YYYY-MM`, completion time) in `finalizeRequest.ts`'s `putDonationHistory` call, which requires widening `FoodRequest` with an optional `month` field so the spread-plus-field object literal type-checks.
 
 - [ ] **Step 1: Write the failing test**
@@ -3250,6 +3250,33 @@ test('queries the month, writes a CSV to S3, returns a summary', async () => {
   expect(result.totalRequests).toBe(2);
   expect(result.csvS3Key).toContain('2026-10');
   expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(1);
+
+  const queryCall = ddbMock.commandCalls(QueryCommand)[0].args[0].input;
+  expect(queryCall.IndexName).toBe('byMonthStatus');
+  expect(queryCall.ExpressionAttributeNames).toEqual({ '#m': 'month' });
+  expect(queryCall.ExpressionAttributeValues).toEqual({ ':month': '2026-10' });
+
+  const putCall = s3Mock.commandCalls(PutObjectCommand)[0].args[0].input;
+  expect(putCall.Body).toBe(
+    'requestId,status,qty,foodType,donorPhone\n' +
+      'req-1,COMPLETE,20 plates,vada pav,+91999\n' +
+      'req-2,COMPLETE,15 plates,biryani,+91888',
+  );
+});
+
+test('defaults to the previous calendar month when event.month is absent (the EventBridge trigger case)', async () => {
+  ddbMock.on(QueryCommand).resolves({ Items: [] });
+  s3Mock.on(PutObjectCommand).resolves({});
+
+  const now = new Date();
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const expectedMonth = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+
+  const result = await handler({});
+
+  expect(result.month).toBe(expectedMonth);
+  const queryCall = ddbMock.commandCalls(QueryCommand)[0].args[0].input;
+  expect(queryCall.ExpressionAttributeValues).toEqual({ ':month': expectedMonth });
 });
 ```
 
@@ -3280,16 +3307,24 @@ interface HistoryRow {
   donorPhone: string;
 }
 
+function previousMonth(): string {
+  const now = new Date();
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  return `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+}
+
 export async function handler(
-  event: { month: string },
+  event: { month?: string },
 ): Promise<{ month: string; totalRequests: number; csvS3Key: string }> {
+  const month = event.month ?? previousMonth();
+
   const res = await ddb.send(
     new QueryCommand({
       TableName: DONATION_HISTORY_TABLE,
       IndexName: 'byMonthStatus',
       KeyConditionExpression: '#m = :month',
       ExpressionAttributeNames: { '#m': 'month' },
-      ExpressionAttributeValues: { ':month': event.month },
+      ExpressionAttributeValues: { ':month': month },
     }),
   );
   const rows = (res.Items as HistoryRow[]) ?? [];
@@ -3297,10 +3332,10 @@ export async function handler(
   const header = 'requestId,status,qty,foodType,donorPhone';
   const csv = [header, ...rows.map((r) => `${r.requestId},${r.status},${r.qty},${r.foodType},${r.donorPhone}`)].join('\n');
 
-  const csvS3Key = `reports/${event.month}.csv`;
+  const csvS3Key = `reports/${month}.csv`;
   await s3.send(new PutObjectCommand({ Bucket: REPORTS_BUCKET, Key: csvS3Key, Body: csv }));
 
-  return { month: event.month, totalRequests: rows.length, csvS3Key };
+  return { month, totalRequests: rows.length, csvS3Key };
 }
 ```
 
