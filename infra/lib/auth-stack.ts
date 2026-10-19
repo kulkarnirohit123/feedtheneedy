@@ -17,6 +17,7 @@ export class AuthStack extends Stack {
     this.userPoolClient = new UserPoolClient(this, 'AdminUserPoolClient', {
       userPool: this.userPool,
       generateSecret: false,
+      authFlows: { userPassword: true },
     });
   }
 }
