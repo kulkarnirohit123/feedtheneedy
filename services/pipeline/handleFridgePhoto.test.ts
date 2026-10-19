@@ -25,6 +25,36 @@ test('startWait prompts the assigned driver and stores pending fridge-photo step
   });
 });
 
+test('startWait tells the driver WHICH fridge to drop at, by name and address', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', driverId: 'd1', fridgeId: 'f1' } as never);
+  mockedDynamo.getDriverById.mockResolvedValue({ driverId: 'd1', phone: '+919111111111' } as never);
+  mockedDynamo.getFridgeById.mockResolvedValue({
+    fridgeId: 'f1',
+    name: 'Indiranagar Community Fridge',
+    address: '100ft Road, Indiranagar',
+  } as never);
+
+  await startWait({ requestId: 'req-1', taskToken: 'tok-2' });
+
+  expect(mockedDynamo.getFridgeById).toHaveBeenCalledWith('f1');
+  const [, message] = mockedWhatsapp.sendWhatsAppText.mock.calls[0];
+  expect(message).toContain('Indiranagar Community Fridge');
+  expect(message).toContain('100ft Road, Indiranagar');
+});
+
+test('startWait falls back to the generic prompt when the fridge record is unavailable', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', driverId: 'd1', fridgeId: 'f-missing' } as never);
+  mockedDynamo.getDriverById.mockResolvedValue({ driverId: 'd1', phone: '+919111111111' } as never);
+  mockedDynamo.getFridgeById.mockResolvedValue(null);
+
+  await startWait({ requestId: 'req-1', taskToken: 'tok-2' });
+
+  expect(mockedWhatsapp.sendWhatsAppText).toHaveBeenCalledWith(
+    '+919111111111',
+    'Please send a photo of the food stored in the fridge to confirm.',
+  );
+});
+
 test('handler is an alias for startWait', () => {
   expect(handler).toBe(startWait);
 });

@@ -29,3 +29,15 @@ test('returns null when no fridges configured, does not update the request', asy
   expect(result.fridgeId).toBeNull();
   expect(mockedDynamo.updateRequest).not.toHaveBeenCalled();
 });
+
+test('a request with no donor geo returns a null fridgeId and persists no match', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-nogeo' } as never);
+  mockedDynamo.getFridges.mockResolvedValue([
+    { fridgeId: 'f1', name: 'F', address: 'x', geo: { lat: 1, lng: 1 }, capacity: 10 },
+  ] as never);
+
+  const result = await handler({ requestId: 'req-nogeo' });
+
+  expect(result.fridgeId).toBeNull();
+  expect(mockedDynamo.updateRequest).not.toHaveBeenCalled();
+});

@@ -1,7 +1,7 @@
 // services/shared/dynamo.test.ts
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { putRequest, getRequest, getDriverByPhone, getDriverById, findActiveRequestByDriverPhone, updateRequest, scanAllRequests } from './dynamo';
+import { putRequest, getRequest, getDriverByPhone, getDriverById, getFridgeById, findActiveRequestByDriverPhone, updateRequest, scanAllRequests } from './dynamo';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
@@ -75,25 +75,76 @@ test('findActiveRequestByDriverPhone ignores a COMPLETE request for that driver'
   expect(result).toBeNull();
 });
 
+/** Reconstructs {fieldName: value} from the #f_n / :v_n indirection the builder emits. */
+function patchFrom(input: any): Record<string, unknown> {
+  const names: Record<string, string> = input.ExpressionAttributeNames ?? {};
+  const values: Record<string, unknown> = input.ExpressionAttributeValues ?? {};
+  const out: Record<string, unknown> = {};
+  for (const [placeholder, field] of Object.entries(names)) {
+    const valueKey = placeholder.replace('#f', ':v');
+    if (valueKey in values) out[field] = values[valueKey];
+  }
+  return out;
+}
+
+function removedFields(input: any): string[] {
+  const match = /REMOVE (.*)$/.exec(input.UpdateExpression as string);
+  if (!match) return [];
+  const names: Record<string, string> = input.ExpressionAttributeNames ?? {};
+  return match[1].split(', ').map((p) => names[p.trim()]);
+}
+
 test('updateRequest builds a REMOVE clause for undefined fields instead of a SET with an undefined value', async () => {
   ddbMock.on(UpdateCommand).resolves({});
   await updateRequest('req-1', { status: 'MATCHING', pendingTaskToken: undefined, pendingStep: undefined });
 
-  const call = ddbMock.commandCalls(UpdateCommand)[0];
-  const input = call.args[0].input;
+  const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input as any;
   expect(input.UpdateExpression).toContain('SET');
   expect(input.UpdateExpression).toContain('REMOVE');
-  expect(Object.values(input.ExpressionAttributeValues ?? {})).toEqual(['MATCHING']);
+  expect(patchFrom(input).status).toBe('MATCHING');
+  expect(removedFields(input).sort()).toEqual(['pendingStep', 'pendingTaskToken']);
 });
 
-test('updateRequest omits ExpressionAttributeValues entirely when every patch field is undefined', async () => {
+test('updateRequest still REMOVEs every undefined field when the patch is undefined-only', async () => {
   ddbMock.on(UpdateCommand).resolves({});
   await updateRequest('req-1', { pendingTaskToken: undefined, pendingStep: undefined });
 
-  const call = ddbMock.commandCalls(UpdateCommand)[0];
-  const input = call.args[0].input;
-  expect(input.UpdateExpression).toBe('REMOVE #f0, #f1');
-  expect(input.ExpressionAttributeValues).toBeUndefined();
+  const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input as any;
+  expect(removedFields(input).sort()).toEqual(['pendingStep', 'pendingTaskToken']);
+  // The only SET is the auto-stamped updatedAt.
+  expect(Object.keys(patchFrom(input))).toEqual(['updatedAt']);
+});
+
+test('updateRequest stamps updatedAt on every patch so no call site can forget it', async () => {
+  ddbMock.on(UpdateCommand).resolves({});
+  const before = new Date().toISOString();
+  await updateRequest('req-1', { status: 'COMPLETE' });
+
+  const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input as any;
+  const patch = patchFrom(input);
+  expect(patch.status).toBe('COMPLETE');
+  expect(typeof patch.updatedAt).toBe('string');
+  expect(patch.updatedAt as string >= before).toBe(true);
+});
+
+test('an explicit updatedAt in the patch wins over the auto-stamp', async () => {
+  ddbMock.on(UpdateCommand).resolves({});
+  await updateRequest('req-1', { status: 'COMPLETE', updatedAt: '2020-01-01T00:00:00.000Z' });
+
+  const input = ddbMock.commandCalls(UpdateCommand)[0].args[0].input as any;
+  expect(patchFrom(input).updatedAt).toBe('2020-01-01T00:00:00.000Z');
+});
+
+test('updateRequest with an empty patch is a no-op, not a bare updatedAt write', async () => {
+  ddbMock.on(UpdateCommand).resolves({});
+  await updateRequest('req-1', {});
+  expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+});
+
+test('getFridgeById reads a fridge by id', async () => {
+  ddbMock.on(GetCommand).resolves({ Item: { fridgeId: 'f1', name: 'Indiranagar Fridge', address: '100ft Road' } });
+  const result = await getFridgeById('f1');
+  expect(result?.name).toBe('Indiranagar Fridge');
 });
 
 test('scanAllRequests returns every request in the table', async () => {

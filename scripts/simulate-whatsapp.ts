@@ -1,3 +1,13 @@
+import { createHmac } from 'crypto';
+
+/**
+ * The webhook now verifies Meta's X-Hub-Signature-256 HMAC, so the simulator has to sign its
+ * payloads with the same App Secret the deployed Lambda reads from META_APP_SECRET.
+ */
+export function signBody(body: string, appSecret: string): string {
+  return `sha256=${createHmac('sha256', appSecret).update(body, 'utf8').digest('hex')}`;
+}
+
 export function buildWebhookPayload(fromPhone: string, text: string) {
   return {
     entry: [
@@ -25,14 +35,26 @@ const SCENARIOS: Record<string, { from: string; text: string }> = {
 async function main() {
   const scenario = process.argv[2];
   const webhookUrl = process.env.WEBHOOK_URL;
-  if (!scenario || !SCENARIOS[scenario] || !webhookUrl) {
-    console.error(`Usage: WEBHOOK_URL=<url> npx ts-node scripts/simulate-whatsapp.ts <${Object.keys(SCENARIOS).join('|')}>`);
+  const appSecret = process.env.META_APP_SECRET;
+  if (!scenario || !SCENARIOS[scenario] || !webhookUrl || !appSecret) {
+    console.error(
+      `Usage: WEBHOOK_URL=<url> META_APP_SECRET=<secret> npx ts-node scripts/simulate-whatsapp.ts <${Object.keys(SCENARIOS).join('|')}>`,
+    );
     process.exit(1);
   }
   const { from, text } = SCENARIOS[scenario];
-  const payload = buildWebhookPayload(from, text);
-  const res = await fetch(webhookUrl, { method: 'POST', body: JSON.stringify(payload) });
-  console.log(`Sent "${scenario}" scenario, response status: ${res.status}`);
+  const body = JSON.stringify(buildWebhookPayload(from, text));
+  try {
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': signBody(body, appSecret) },
+      body,
+    });
+    console.log(`Sent "${scenario}" scenario, response status: ${res.status}`);
+  } catch (err) {
+    console.error(`Failed to reach ${webhookUrl}: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
 }
 
 if (require.main === module) {

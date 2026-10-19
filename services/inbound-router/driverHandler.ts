@@ -67,10 +67,16 @@ export async function handleDriverMessage(input: InboundDriverMessage): Promise<
     return;
   }
 
+  // The state machine's DriverAccepted Choice does an exact StringEquals on $.reply, so the
+  // raw WhatsApp text must be normalised here: "decline", "Decline", "no", "" all previously
+  // fell through to the Choice default and were treated as an ACCEPT, trapping a driver who
+  // had just refused. Only an explicit ACCEPT accepts; everything else declines.
+  const reply = (input.text ?? '').trim().toUpperCase() === 'ACCEPT' ? 'ACCEPT' : 'DECLINE';
+
   await sfn.send(
     new SendTaskSuccessCommand({
       taskToken: req.pendingTaskToken,
-      output: JSON.stringify({ requestId: req.requestId, reply: input.text ?? 'PHOTO' }),
+      output: JSON.stringify({ requestId: req.requestId, reply }),
     }),
   );
 }

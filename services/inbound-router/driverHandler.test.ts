@@ -33,7 +33,39 @@ test('ACCEPT reply resumes the waiting ACCEPT step', async () => {
   expect(JSON.parse(call.args[0].input.output as string)).toEqual({
     requestId: 'req-1',
     reply: 'ACCEPT',
-    mediaUrl: undefined,
+  });
+});
+
+describe('reply normalisation (the ASL Choice does an exact StringEquals on $.reply)', () => {
+  beforeEach(() => {
+    mockedDynamo.findActiveRequestByDriverPhone.mockResolvedValue({
+      requestId: 'req-1',
+      pendingTaskToken: 'token-123',
+      pendingStep: 'ACCEPT',
+      status: 'DRIVER_ASSIGNED',
+    } as never);
+    sfnMock.on(SendTaskSuccessCommand).resolves({});
+  });
+
+  async function replyFor(text: string | undefined): Promise<string> {
+    await handleDriverMessage({ fromPhone: '+91driver', text });
+    const call = sfnMock.commandCalls(SendTaskSuccessCommand).slice(-1)[0];
+    return JSON.parse(call.args[0].input.output as string).reply;
+  }
+
+  test.each([' accept ', 'Accept', 'ACCEPT', 'accept'])('%p is normalised to ACCEPT', async (text) => {
+    expect(await replyFor(text)).toBe('ACCEPT');
+  });
+
+  test.each(['DECLINE', 'decline', 'Decline', ' no ', 'nope', 'busy right now', ''])(
+    '%p is treated as a DECLINE, not silently accepted',
+    async (text) => {
+      expect(await replyFor(text)).toBe('DECLINE');
+    },
+  );
+
+  test('a reply with no text at all declines rather than defaulting into the accept path', async () => {
+    expect(await replyFor(undefined)).toBe('DECLINE');
   });
 });
 

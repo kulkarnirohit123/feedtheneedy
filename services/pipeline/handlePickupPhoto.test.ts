@@ -19,9 +19,19 @@ test('startWait prompts the assigned driver for a photo and stores pending step 
 
   expect(mockedWhatsapp.sendWhatsAppText).toHaveBeenCalledWith('+919111111111', expect.stringContaining('photo'));
   expect(mockedDynamo.updateRequest).toHaveBeenCalledWith('req-1', {
+    status: 'DRIVER_ACCEPTED',
     pendingTaskToken: 'tok-1',
     pendingStep: 'PICKUP_PHOTO',
   });
+});
+
+test('startWait is where DRIVER_ACCEPTED is recorded — it runs once the ACCEPT has resolved', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-1', driverId: 'd1' } as never);
+  mockedDynamo.getDriverById.mockResolvedValue({ driverId: 'd1', phone: '+919111111111' } as never);
+
+  await startWait({ requestId: 'req-1', taskToken: 'tok-1' });
+
+  expect(mockedDynamo.updateRequest.mock.calls[0][1].status).toBe('DRIVER_ACCEPTED');
 });
 
 test('handler is an alias for startWait, used as the deployed Lambda entrypoint', () => {

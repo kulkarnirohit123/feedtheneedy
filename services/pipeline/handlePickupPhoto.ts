@@ -14,7 +14,11 @@ export async function startWait(event: { requestId: string; taskToken: string })
     }
   }
 
+  // This state is only reached once the driver's ACCEPT has resolved the previous wait, so
+  // this is the single point where DRIVER_ACCEPTED is observable — without it the status
+  // jumped straight from DRIVER_ASSIGNED to PICKUP_PHOTO_CONFIRMED.
   await updateRequest(event.requestId, {
+    status: 'DRIVER_ACCEPTED',
     pendingTaskToken: event.taskToken,
     pendingStep: 'PICKUP_PHOTO',
   });

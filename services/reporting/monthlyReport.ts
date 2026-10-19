@@ -22,6 +22,19 @@ function previousMonth(): string {
   return `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
 }
 
+/**
+ * RFC 4180 field escaping. qty/foodType are free text extracted by Bedrock from a donor's
+ * WhatsApp message ("20 plates, mixed veg"), so an unescaped comma silently shifts every
+ * column after it for that row.
+ */
+export function csvField(value: unknown): string {
+  const s = value === undefined || value === null ? '' : String(value);
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
 export async function handler(
   event: { month?: string },
 ): Promise<{ month: string; totalRequests: number; csvS3Key: string }> {
@@ -39,7 +52,10 @@ export async function handler(
   const rows = (res.Items as HistoryRow[]) ?? [];
 
   const header = 'requestId,status,qty,foodType,donorPhone';
-  const csv = [header, ...rows.map((r) => `${r.requestId},${r.status},${r.qty},${r.foodType},${r.donorPhone}`)].join('\n');
+  const csv = [
+    header,
+    ...rows.map((r) => [r.requestId, r.status, r.qty, r.foodType, r.donorPhone].map(csvField).join(',')),
+  ].join('\n');
 
   const csvS3Key = `reports/${month}.csv`;
   await s3.send(new PutObjectCommand({ Bucket: REPORTS_BUCKET, Key: csvS3Key, Body: csv }));

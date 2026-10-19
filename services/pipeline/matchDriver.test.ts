@@ -37,3 +37,15 @@ test('excludes driver ids already tried for this request', async () => {
   const result = await handler({ requestId: 'req-1' });
   expect(result.driverId).toBeNull();
 });
+
+test('a request with no donor geo returns a null driverId instead of picking an arbitrary driver', async () => {
+  mockedDynamo.getRequest.mockResolvedValue({ requestId: 'req-nogeo' } as never);
+  mockedDynamo.getAvailableDrivers.mockResolvedValue([
+    { driverId: 'd1', phone: 'p1', name: 'A', currentGeo: { lat: 1, lng: 1 }, status: 'available', lastActive: 'now' },
+  ] as never);
+
+  const result = await handler({ requestId: 'req-nogeo' });
+
+  expect(result.driverId).toBeNull();
+  expect(mockedDynamo.getAvailableDrivers).not.toHaveBeenCalled();
+});

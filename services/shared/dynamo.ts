@@ -29,8 +29,13 @@ export async function getRequest(requestId: string): Promise<FoodRequest | null>
 }
 
 export async function updateRequest(requestId: string, patch: Partial<FoodRequest>): Promise<void> {
-  const keys = Object.keys(patch) as (keyof FoodRequest)[];
-  if (keys.length === 0) return;
+  if (Object.keys(patch).length === 0) return;
+
+  // updatedAt is stamped here rather than at each call site so no caller can forget it —
+  // before this, a request's updatedAt stayed frozen at creation time for its whole lifecycle.
+  // An explicit updatedAt in the patch still wins.
+  const stamped: Partial<FoodRequest> = { updatedAt: new Date().toISOString(), ...patch };
+  const keys = Object.keys(stamped) as (keyof FoodRequest)[];
 
   const names: Record<string, string> = {};
   const values: Record<string, unknown> = {};
@@ -39,7 +44,7 @@ export async function updateRequest(requestId: string, patch: Partial<FoodReques
 
   keys.forEach((k, i) => {
     names[`#f${i}`] = k;
-    const v = (patch as Record<string, unknown>)[k];
+    const v = (stamped as Record<string, unknown>)[k];
     if (v === undefined) {
       removeClauses.push(`#f${i}`);
     } else {
@@ -110,6 +115,11 @@ export async function getAvailableDrivers(): Promise<Driver[]> {
 export async function getFridges(): Promise<Fridge[]> {
   const res = await client.send(new ScanCommand({ TableName: FRIDGES_TABLE }));
   return (res.Items as Fridge[]) ?? [];
+}
+
+export async function getFridgeById(fridgeId: string): Promise<Fridge | null> {
+  const res = await client.send(new GetCommand({ TableName: FRIDGES_TABLE, Key: { fridgeId } }));
+  return (res.Item as Fridge) ?? null;
 }
 
 export async function getDriverByPhone(phone: string): Promise<Driver | null> {

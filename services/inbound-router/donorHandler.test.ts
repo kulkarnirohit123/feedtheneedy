@@ -20,12 +20,12 @@ beforeEach(() => {
   sfnMock.on(StartExecutionCommand).resolves({});
 });
 
-test('confident food donation offer creates a Request, sends donor ack, and starts the pipeline execution', async () => {
+test('confident food donation offer with a geo creates a Request and starts the pipeline execution', async () => {
   mockedDynamo.hasProcessedMessage.mockResolvedValue(false);
   mockedClassifier.classifyMessage.mockResolvedValue({
     verdict: 'food_donation_offer',
     confidence: 0.9,
-    extracted: { qty: '20 plates', foodType: 'vada pav', locationText: 'Koramangala' },
+    extracted: { qty: '20 plates', foodType: 'vada pav', locationText: 'Koramangala 5th Block' },
   });
 
   await handleDonorMessage({
@@ -38,17 +38,48 @@ test('confident food donation offer creates a Request, sends donor ack, and star
   expect(mockedDynamo.putRequest).toHaveBeenCalledTimes(1);
   const created = mockedDynamo.putRequest.mock.calls[0][0];
   expect(created.status).toBe('MATCHING');
+  expect(created.geo).toEqual({ lat: 1, lng: 2 });
+  expect(created.locationText).toBe('Koramangala 5th Block');
   expect(mockedDynamo.putSpamLog).not.toHaveBeenCalled();
 
-  expect(mockedWhatsapp.sendWhatsAppText).toHaveBeenCalledTimes(1);
-  expect(mockedWhatsapp.sendWhatsAppText).toHaveBeenCalledWith(
-    '+91999',
-    'Thank you for sharing the information, driver will be available in next 60 minutes',
-  );
+  // I1: the donor ack belongs to the state machine's NotifyDonor state, not here.
+  expect(mockedWhatsapp.sendWhatsAppText).not.toHaveBeenCalled();
 
   const executions = sfnMock.commandCalls(StartExecutionCommand);
   expect(executions).toHaveLength(1);
   expect(JSON.parse(executions[0].args[0].input.input as string)).toEqual({ requestId: created.requestId });
+});
+
+test('a confident offer with NO geo is never dispatched — it lands in PENDING_REVIEW and asks for a location', async () => {
+  mockedDynamo.hasProcessedMessage.mockResolvedValue(false);
+  mockedClassifier.classifyMessage.mockResolvedValue({
+    verdict: 'food_donation_offer',
+    confidence: 0.95,
+    extracted: { qty: '20 plates', foodType: 'vada pav', locationText: 'Koramangala' },
+  });
+
+  await handleDonorMessage({ messageId: 'm-nogeo', fromPhone: '+91999', text: '20 vada pav leftover' });
+
+  const created = mockedDynamo.putRequest.mock.calls[0][0];
+  expect(created.status).toBe('PENDING_REVIEW');
+  expect(created.geo).toBeUndefined();
+  expect(sfnMock.commandCalls(StartExecutionCommand)).toHaveLength(0);
+  expect(mockedWhatsapp.sendWhatsAppText).toHaveBeenCalledWith('+91999', expect.stringMatching(/location/i));
+});
+
+test('a missing geo is stored as undefined, never fabricated as {lat:0,lng:0}', async () => {
+  mockedDynamo.hasProcessedMessage.mockResolvedValue(false);
+  mockedClassifier.classifyMessage.mockResolvedValue({
+    verdict: 'food_donation_offer',
+    confidence: 0.9,
+    extracted: { qty: '5 plates', foodType: 'rice', locationText: 'HSR' },
+  });
+
+  await handleDonorMessage({ messageId: 'm-null-island', fromPhone: '+91999', text: 'rice' });
+
+  const created = mockedDynamo.putRequest.mock.calls[0][0];
+  expect(created.geo).toBeUndefined();
+  expect(created).not.toEqual(expect.objectContaining({ geo: { lat: 0, lng: 0 } }));
 });
 
 test('low confidence offer does not start a pipeline execution', async () => {
@@ -73,7 +104,7 @@ test('low confidence offer goes to PENDING_REVIEW, no dispatch', async () => {
     extracted: { qty: '?', foodType: '?', locationText: '?' },
   });
 
-  await handleDonorMessage({ messageId: 'm2', fromPhone: '+91999', text: 'maybe have food' });
+  await handleDonorMessage({ messageId: 'm2', fromPhone: '+91999', text: 'maybe have food', geo: { lat: 1, lng: 2 } });
 
   const created = mockedDynamo.putRequest.mock.calls[0][0];
   expect(created.status).toBe('PENDING_REVIEW');
@@ -89,6 +120,7 @@ test('spam verdict is logged and dropped, no Request created', async () => {
 
   expect(mockedDynamo.putRequest).not.toHaveBeenCalled();
   expect(mockedDynamo.putSpamLog).toHaveBeenCalledTimes(1);
+  expect(mockedDynamo.markMessageProcessed).toHaveBeenCalledWith('m3');
   expect(mockedWhatsapp.sendWhatsAppText).not.toHaveBeenCalled();
   expect(sfnMock.commandCalls(StartExecutionCommand)).toHaveLength(0);
 });
@@ -101,6 +133,7 @@ test('classifier failure fails open to PENDING_REVIEW, never dropped', async () 
 
   expect(mockedDynamo.putRequest).toHaveBeenCalledTimes(1);
   expect(mockedDynamo.putRequest.mock.calls[0][0].status).toBe('PENDING_REVIEW');
+  expect(mockedDynamo.markMessageProcessed).toHaveBeenCalledWith('m4');
   expect(mockedWhatsapp.sendWhatsAppText).not.toHaveBeenCalled();
   expect(sfnMock.commandCalls(StartExecutionCommand)).toHaveLength(0);
 });
@@ -111,7 +144,47 @@ test('duplicate messageId is a no-op (idempotency)', async () => {
   await handleDonorMessage({ messageId: 'm1', fromPhone: '+91999', text: 'repeat' });
 
   expect(mockedClassifier.classifyMessage).not.toHaveBeenCalled();
+  expect(mockedDynamo.markMessageProcessed).not.toHaveBeenCalled();
   expect(mockedDynamo.putRequest).not.toHaveBeenCalled();
   expect(mockedWhatsapp.sendWhatsAppText).not.toHaveBeenCalled();
   expect(sfnMock.commandCalls(StartExecutionCommand)).toHaveLength(0);
+});
+
+// --- I14: a transient failure must leave the message replayable ---
+
+test('the message is only marked processed after all work succeeds', async () => {
+  mockedDynamo.hasProcessedMessage.mockResolvedValue(false);
+  mockedClassifier.classifyMessage.mockResolvedValue({
+    verdict: 'food_donation_offer',
+    confidence: 0.9,
+    extracted: { qty: '20 plates', foodType: 'vada pav', locationText: 'Koramangala' },
+  });
+
+  const order: string[] = [];
+  mockedDynamo.putRequest.mockImplementation(async () => {
+    order.push('putRequest');
+  });
+  mockedDynamo.markMessageProcessed.mockImplementation(async () => {
+    order.push('markMessageProcessed');
+  });
+
+  await handleDonorMessage({ messageId: 'm-order', fromPhone: '+91999', text: 'food', geo: { lat: 1, lng: 2 } });
+
+  expect(order).toEqual(['putRequest', 'markMessageProcessed']);
+});
+
+test('a transient putRequest failure rethrows and does NOT mark the message processed', async () => {
+  mockedDynamo.hasProcessedMessage.mockResolvedValue(false);
+  mockedClassifier.classifyMessage.mockResolvedValue({
+    verdict: 'food_donation_offer',
+    confidence: 0.9,
+    extracted: { qty: '20 plates', foodType: 'vada pav', locationText: 'Koramangala' },
+  });
+  mockedDynamo.putRequest.mockRejectedValue(new Error('DynamoDB throughput exceeded'));
+
+  await expect(
+    handleDonorMessage({ messageId: 'm-fail', fromPhone: '+91999', text: 'food', geo: { lat: 1, lng: 2 } }),
+  ).rejects.toThrow('DynamoDB throughput exceeded');
+
+  expect(mockedDynamo.markMessageProcessed).not.toHaveBeenCalled();
 });

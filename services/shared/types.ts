@@ -20,7 +20,14 @@ export interface FoodRequest {
   donorPhone: string;
   qty: string;
   foodType: string;
-  geo: GeoPoint;
+  /**
+   * Optional on purpose: WhatsApp donors only have a geo when they send a location message.
+   * Never default this to {lat:0,lng:0} — that silently anchors every distance calculation
+   * to Null Island, making "nearest driver"/"nearest fridge" a constant function.
+   */
+  geo?: GeoPoint;
+  /** Free-text address as extracted by the classifier, e.g. "Koramangala 5th Block". */
+  locationText?: string;
   status: RequestStatus;
   driverId?: string;
   fridgeId?: string;

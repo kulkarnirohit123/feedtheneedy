@@ -1,5 +1,5 @@
 // services/pipeline/handleFridgePhoto.ts
-import { getRequest, getDriverById, updateRequest } from '../shared/dynamo';
+import { getRequest, getDriverById, getFridgeById, updateRequest } from '../shared/dynamo';
 import { sendWhatsAppText } from '../shared/whatsapp';
 import { InvalidPhotoError } from './handlePickupPhoto';
 
@@ -9,7 +9,16 @@ export async function startWait(event: { requestId: string; taskToken: string })
   if (req.driverId) {
     const driver = await getDriverById(req.driverId);
     if (driver) {
-      await sendWhatsAppText(driver.phone, 'Please send a photo of the food stored in the fridge to confirm.');
+      // Naming the matched fridge is the only way the driver learns where to drop the food —
+      // MatchFridge stores fridgeId on the request but never told anyone which fridge it is.
+      const fridge = req.fridgeId ? await getFridgeById(req.fridgeId) : null;
+      const destination = fridge ? `${fridge.name}, ${fridge.address}` : null;
+      await sendWhatsAppText(
+        driver.phone,
+        destination
+          ? `Drop the food at ${destination}. Please send a photo of the food stored in the fridge to confirm.`
+          : 'Please send a photo of the food stored in the fridge to confirm.',
+      );
     }
   }
 
