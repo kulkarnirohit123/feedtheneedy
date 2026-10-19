@@ -3534,9 +3534,19 @@ cd infra && npx cdk deploy --all --require-approval never
 
 (`build:services` is the root `package.json` script set up during Task 16 — `tsc -p services/tsconfig.json` — producing `services/dist/{shared,pipeline,inbound-router,admin-api,reporting}/*.js`, exactly matching every Lambda's `${entry}.handler` string and every `Code.fromAsset(path.join(__dirname, '..', '..', 'services', 'dist'))` call across all five stacks.)
 
-Expected: six stacks deploy successfully; note the `WhatsAppWebhookApi` URL, the `AdminApi` URL, the `AdminUserPoolClient` ID, and the AWS region from the CDK output.
+Expected: six stacks deploy successfully; note the `WhatsAppWebhookApiEndpoint` URL, the `AdminApiEndpoint` URL, the `AdminUserPoolId`/`AdminUserPoolClientId`, and the AWS region from the CDK output.
 
 - [ ] **Step 4: Write README with deploy + demo instructions**
+
+Add two outputs to `infra/lib/auth-stack.ts` first — `AdminUserPool`/`AdminUserPoolClient` don't export their IDs by default, and both the admin-user and dashboard steps below need them:
+
+```typescript
+// append inside AuthStack's constructor, after creating userPool/userPoolClient
+new CfnOutput(this, 'AdminUserPoolId', { value: this.userPool.userPoolId });
+new CfnOutput(this, 'AdminUserPoolClientId', { value: this.userPoolClient.userPoolClientId });
+```
+
+(Import `CfnOutput` from `aws-cdk-lib` alongside the existing `Stack`/`StackProps` import.)
 
 ```markdown
 # Food NGO Pickup Platform
@@ -3547,13 +3557,20 @@ full design.
 
 ## Deploy the backend
 
+0. First-time only: `cd infra && npx cdk bootstrap` (every Lambda here uses
+   `Code.fromAsset`, which needs the CDK toolkit stack deployed to your
+   account/region once — `cdk deploy` fails with an explicit error telling
+   you to run this if you skip it).
 1. `npm install` (repo root — installs all workspaces).
 2. `npm run build:services`
 3. `cd infra && npx cdk deploy --all --require-approval never`
-4. From the CDK output, note: the `WhatsAppWebhookApi` URL, the `AdminApi`
-   URL, the `AdminUserPoolClient` ID, and your AWS region.
-5. Register the `WhatsAppWebhookApi` URL as the AWS End User Messaging
-   Social webhook callback for your WhatsApp Business number.
+4. From the CDK output, note: the `WhatsAppWebhookApiEndpoint` URL, the
+   `AdminApiEndpoint` URL, `AdminUserPoolId`, `AdminUserPoolClientId`, and
+   your AWS region.
+5. Register `<WhatsAppWebhookApiEndpoint URL>webhook` (the API's root URL
+   plus the `webhook` resource path — not the bare root URL) as the AWS
+   End User Messaging Social webhook callback for your WhatsApp Business
+   number.
 6. `npx ts-node scripts/seed-drivers-fridges.ts`
 
 ### Wiring the Bedrock Agent and WhatsApp phone number (once provisioned)
@@ -3579,11 +3596,11 @@ that challenge. Set the password as permanent in the same step:
 
 ```bash
 aws cognito-idp admin-create-user \
-  --user-pool-id <AdminUserPool ID from the CDK output> \
+  --user-pool-id <AdminUserPoolId from the CDK output> \
   --username <admin email> \
   --message-action SUPPRESS
 aws cognito-idp admin-set-user-password \
-  --user-pool-id <AdminUserPool ID> \
+  --user-pool-id <AdminUserPoolId> \
   --username <admin email> \
   --password '<a real password meeting the pool's policy>' \
   --permanent
@@ -3591,23 +3608,24 @@ aws cognito-idp admin-set-user-password \
 
 ### Running the admin dashboard
 
-The dashboard is a Vite app (Task 19) with no hosting stack in this
-plan — for the hackathon demo, run it locally against the deployed API:
+The dashboard is a Vite app with no hosting stack in this plan — for the
+hackathon demo, run it locally against the deployed API:
 
-1. `cd admin-dashboard`
+1. `cd admin-dashboard` (skip `npm install` here — the repo-root install
+   in step 1 above already covers this workspace).
 2. Create `.env.local`:
    ```
-   VITE_ADMIN_API_URL=<AdminApi URL from the CDK output, no trailing slash>
+   VITE_ADMIN_API_URL=<AdminApiEndpoint URL from the CDK output, no trailing slash>
    VITE_AWS_REGION=<your AWS region, e.g. ap-south-1>
-   VITE_USER_POOL_CLIENT_ID=<AdminUserPoolClient ID from the CDK output>
+   VITE_USER_POOL_CLIENT_ID=<AdminUserPoolClientId from the CDK output>
    ```
-3. `npm install && npm run dev`, then sign in with the admin user created above.
+3. `npm run dev`, then sign in with the admin user created above.
 
 ## Demo script
 
 ```bash
-WEBHOOK_URL=<webhook url> npx ts-node scripts/simulate-whatsapp.ts donor_offer
-WEBHOOK_URL=<webhook url> npx ts-node scripts/simulate-whatsapp.ts spam
+WEBHOOK_URL=<WhatsAppWebhookApiEndpoint URL>webhook npx ts-node scripts/simulate-whatsapp.ts donor_offer
+WEBHOOK_URL=<WhatsAppWebhookApiEndpoint URL>webhook npx ts-node scripts/simulate-whatsapp.ts spam
 ```
 
 Watch the `Requests` table: the `donor_offer` scenario should progress
