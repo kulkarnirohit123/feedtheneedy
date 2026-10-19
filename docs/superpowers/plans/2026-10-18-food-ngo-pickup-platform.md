@@ -2821,9 +2821,11 @@ export async function scanAllRequests(): Promise<FoodRequest[]> {
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { scanAllRequests } from '../shared/dynamo';
 
+const CORS_HEADERS = { 'Access-Control-Allow-Origin': '*' };
+
 export async function handler(_event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
   const requests = await scanAllRequests();
-  return { statusCode: 200, body: JSON.stringify({ requests }) };
+  return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ requests }) };
 }
 ```
 
@@ -2832,10 +2834,12 @@ export async function handler(_event: APIGatewayProxyEvent): Promise<APIGatewayP
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { updateRequest } from '../shared/dynamo';
 
+const CORS_HEADERS = { 'Access-Control-Allow-Origin': '*' };
+
 export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
   const { requestId, driverId } = JSON.parse(event.body ?? '{}');
   await updateRequest(requestId, { driverId });
-  return { statusCode: 200, body: JSON.stringify({ requestId, driverId }) };
+  return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ requestId, driverId }) };
 }
 ```
 
@@ -2845,7 +2849,7 @@ import * as path from 'path';
 import { Stack, StackProps, Duration } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { Function, Runtime, Code } from 'aws-cdk-lib/aws-lambda';
-import { RestApi, LambdaIntegration, CognitoUserPoolsAuthorizer, AuthorizationType } from 'aws-cdk-lib/aws-apigateway';
+import { RestApi, LambdaIntegration, CognitoUserPoolsAuthorizer, AuthorizationType, Cors } from 'aws-cdk-lib/aws-apigateway';
 import { DataStack } from './data-stack';
 import { AuthStack } from './auth-stack';
 
@@ -2879,7 +2883,12 @@ export class AdminApiStack extends Stack {
     });
     data.requestsTable.grantReadWriteData(overrideFn);
 
-    this.api = new RestApi(this, 'AdminApi');
+    this.api = new RestApi(this, 'AdminApi', {
+      defaultCorsPreflightOptions: {
+        allowOrigins: Cors.ALL_ORIGINS,
+        allowHeaders: [...Cors.DEFAULT_HEADERS, 'Authorization'],
+      },
+    });
     const authorizer = new CognitoUserPoolsAuthorizer(this, 'AdminAuthorizer', {
       cognitoUserPools: [auth.userPool],
     });
@@ -3057,7 +3066,7 @@ export function Login({ onSignedIn }: { onSignedIn: () => void }) {
 
 ```typescript
 // admin-dashboard/src/api.ts
-import { getIdToken } from './auth';
+import { getIdToken, signOut } from './auth';
 
 const API_BASE = import.meta.env.VITE_ADMIN_API_URL as string;
 
@@ -3070,47 +3079,74 @@ export interface FoodRequest {
   driverId?: string;
 }
 
+export class SessionExpiredError extends Error {}
+
 function authHeaders(): Record<string, string> {
   const token = getIdToken();
   return token ? { Authorization: token } : {};
 }
 
+async function checkResponse(res: Response): Promise<Response> {
+  if (res.status === 401) {
+    signOut();
+    throw new SessionExpiredError('Session expired, please sign in again.');
+  }
+  return res;
+}
+
 export async function fetchRequests(): Promise<FoodRequest[]> {
-  const res = await fetch(`${API_BASE}/requests`, { headers: authHeaders() });
+  const res = await checkResponse(await fetch(`${API_BASE}/requests`, { headers: authHeaders() }));
   const body = await res.json();
   return body.requests;
 }
 
 export async function overrideAssign(requestId: string, driverId: string): Promise<void> {
-  await fetch(`${API_BASE}/requests/assign`, {
-    method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ requestId, driverId }),
-  });
+  await checkResponse(
+    await fetch(`${API_BASE}/requests/assign`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId, driverId }),
+    }),
+  );
 }
 ```
 
 ```tsx
 // admin-dashboard/src/pages/Dashboard.tsx
 import { useEffect, useState } from 'react';
-import { fetchRequests, overrideAssign, FoodRequest } from '../api';
+import { fetchRequests, overrideAssign, FoodRequest, SessionExpiredError } from '../api';
+import { signOut } from '../auth';
 
 const FALLBACK_DRIVER_ID = 'driver-2';
 
-export function Dashboard() {
+export function Dashboard({ onSignedOut = () => {} }: { onSignedOut?: () => void }) {
   const [requests, setRequests] = useState<FoodRequest[]>([]);
 
   useEffect(() => {
-    fetchRequests().then(setRequests);
-  }, []);
+    fetchRequests()
+      .then(setRequests)
+      .catch((err) => {
+        if (err instanceof SessionExpiredError) onSignedOut();
+      });
+  }, [onSignedOut]);
 
   async function handleReassign(requestId: string) {
-    await overrideAssign(requestId, FALLBACK_DRIVER_ID);
+    try {
+      await overrideAssign(requestId, FALLBACK_DRIVER_ID);
+    } catch (err) {
+      if (err instanceof SessionExpiredError) onSignedOut();
+    }
+  }
+
+  function handleSignOut() {
+    signOut();
+    onSignedOut();
   }
 
   return (
     <div>
       <h1>Live Pickup Requests</h1>
+      <button onClick={handleSignOut}>Sign out</button>
       <ul>
         {requests.map((r) => (
           <li key={r.requestId}>
@@ -3137,9 +3173,11 @@ export function App() {
   if (!signedIn) {
     return <Login onSignedIn={() => setSignedIn(true)} />;
   }
-  return <Dashboard />;
+  return <Dashboard onSignedOut={() => setSignedIn(false)} />;
 }
 ```
+
+Note: `Dashboard`'s `onSignedOut` prop defaults to a no-op so the existing `Dashboard.test.tsx` (rendering `<Dashboard />` with no props) still compiles and passes unchanged.
 
 - [ ] **Step 4: Run test to verify it passes**
 
