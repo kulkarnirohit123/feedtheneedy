@@ -17,6 +17,7 @@ test('marks the request COMPLETE, frees the driver, writes history', async () =>
     requestId: 'req-1',
     driverId: 'd1',
     status: 'COMPLETE',
+    month: expect.stringMatching(/^\d{4}-\d{2}$/),
   });
   expect(result.status).toBe('COMPLETE');
 });

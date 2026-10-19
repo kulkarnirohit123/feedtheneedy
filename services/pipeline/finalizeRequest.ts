@@ -12,7 +12,8 @@ export async function handler(
     await updateDriverStatus(req.driverId, 'available');
   }
 
-  await putDonationHistory({ ...req, status: 'COMPLETE' });
+  const month = new Date().toISOString().slice(0, 7);
+  await putDonationHistory({ ...req, status: 'COMPLETE', month });
 
   return { requestId: event.requestId, status: 'COMPLETE' };
 }

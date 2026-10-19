@@ -33,6 +33,7 @@ export interface FoodRequest {
   pendingStep?: 'ACCEPT' | 'PICKUP_PHOTO' | 'FRIDGE_PHOTO';
   lastInboundMessageId?: string;
   triedDriverIds?: string[];
+  month?: string;
 }
 
 export interface Driver {
