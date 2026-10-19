@@ -5,6 +5,7 @@ import { PipelineStack } from '../lib/pipeline-stack';
 import { AdminApiStack } from '../lib/admin-api-stack';
 import { ReportingStack } from '../lib/reporting-stack';
 import { AlarmsStack } from '../lib/alarms-stack';
+import { DashboardStack } from '../lib/dashboard-stack';
 
 const app = new App();
 const data = new DataStack(app, 'FoodNgoDataStack');
@@ -13,3 +14,4 @@ const pipeline = new PipelineStack(app, 'FoodNgoPipelineStack', { data });
 new AdminApiStack(app, 'FoodNgoAdminApiStack', { data, auth });
 new ReportingStack(app, 'FoodNgoReportingStack', { data });
 new AlarmsStack(app, 'FoodNgoAlarmsStack', { pipeline });
+new DashboardStack(app, 'FoodNgoDashboardStack');
