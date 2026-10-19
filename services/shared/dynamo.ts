@@ -153,3 +153,8 @@ export async function markMessageProcessed(messageId: string): Promise<void> {
     new PutCommand({ TableName: PROCESSED_MESSAGES_TABLE, Item: { messageId, processedAt: new Date().toISOString() } }),
   );
 }
+
+export async function scanAllRequests(): Promise<FoodRequest[]> {
+  const res = await client.send(new ScanCommand({ TableName: REQUESTS_TABLE }));
+  return (res.Items as FoodRequest[]) ?? [];
+}

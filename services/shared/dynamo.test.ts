@@ -1,7 +1,7 @@
 // services/shared/dynamo.test.ts
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { putRequest, getRequest, getDriverByPhone, getDriverById, findActiveRequestByDriverPhone, updateRequest } from './dynamo';
+import { putRequest, getRequest, getDriverByPhone, getDriverById, findActiveRequestByDriverPhone, updateRequest, scanAllRequests } from './dynamo';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
@@ -94,4 +94,11 @@ test('updateRequest omits ExpressionAttributeValues entirely when every patch fi
   const input = call.args[0].input;
   expect(input.UpdateExpression).toBe('REMOVE #f0, #f1');
   expect(input.ExpressionAttributeValues).toBeUndefined();
+});
+
+test('scanAllRequests returns every request in the table', async () => {
+  ddbMock.on(ScanCommand).resolves({ Items: [{ requestId: 'req-1', status: 'MATCHING' }] });
+  const result = await scanAllRequests();
+  expect(result).toHaveLength(1);
+  expect(result[0].requestId).toBe('req-1');
 });
