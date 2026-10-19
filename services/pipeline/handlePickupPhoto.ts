@@ -1,6 +1,7 @@
 // services/pipeline/handlePickupPhoto.ts
 import { getRequest, getDriverById, updateRequest } from '../shared/dynamo';
 import { sendWhatsAppText } from '../shared/whatsapp';
+import { persistWhatsAppMedia } from '../shared/media';
 
 export class InvalidPhotoError extends Error {}
 
@@ -31,14 +32,20 @@ export async function handleResult(
     throw new InvalidPhotoError('No media URL in driver reply');
   }
 
+  // A `media:<id>` token is a short-lived Meta handle, not a durable URL — archive the actual
+  // bytes in the photos bucket and store that key. Falls back to the raw reference if the
+  // archive fails (see persistWhatsAppMedia for why that beats wedging the pickup).
+  const s3Key = await persistWhatsAppMedia(event.mediaUrl, `photos/${event.requestId}/pickup`);
+  const pickupPhotoUrl = s3Key ?? event.mediaUrl;
+
   await updateRequest(event.requestId, {
     status: 'PICKUP_PHOTO_CONFIRMED',
-    pickupPhotoUrl: event.mediaUrl,
+    pickupPhotoUrl,
     pendingTaskToken: undefined,
     pendingStep: undefined,
   });
 
-  return { requestId: event.requestId, valid: true, pickupPhotoUrl: event.mediaUrl };
+  return { requestId: event.requestId, valid: true, pickupPhotoUrl };
 }
 
 export const handler = startWait;

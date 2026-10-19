@@ -3,12 +3,15 @@ import { startWait, handleResult, handler } from './handleFridgePhoto';
 import { InvalidPhotoError } from './handlePickupPhoto';
 import * as dynamo from '../shared/dynamo';
 import * as whatsapp from '../shared/whatsapp';
+import * as media from '../shared/media';
 
 jest.mock('../shared/dynamo');
 jest.mock('../shared/whatsapp');
+jest.mock('../shared/media');
 
 const mockedDynamo = dynamo as jest.Mocked<typeof dynamo>;
 const mockedWhatsapp = whatsapp as jest.Mocked<typeof whatsapp>;
+const mockedMedia = media as jest.Mocked<typeof media>;
 
 beforeEach(() => jest.clearAllMocks());
 
@@ -70,4 +73,19 @@ test('handleResult with valid media url confirms fridge drop', async () => {
 
 test('handleResult with missing media url throws InvalidPhotoError', async () => {
   await expect(handleResult({ requestId: 'req-1' })).rejects.toThrow(InvalidPhotoError);
+});
+
+test('handleResult archives the fridge photo in S3 and stores the resulting key', async () => {
+  mockedMedia.persistWhatsAppMedia.mockResolvedValue('photos/req-1/fridge.jpg');
+
+  const result = await handleResult({ requestId: 'req-1', mediaUrl: 'media:456' });
+
+  expect(mockedMedia.persistWhatsAppMedia).toHaveBeenCalledWith('media:456', 'photos/req-1/fridge');
+  expect(result.fridgePhotoUrl).toBe('photos/req-1/fridge.jpg');
+});
+
+test('a failed fridge-photo archive falls back to the raw media reference', async () => {
+  mockedMedia.persistWhatsAppMedia.mockResolvedValue(null);
+  const result = await handleResult({ requestId: 'req-1', mediaUrl: 'media:456' });
+  expect(result.fridgePhotoUrl).toBe('media:456');
 });

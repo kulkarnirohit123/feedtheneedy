@@ -1,10 +1,12 @@
 import * as path from 'path';
 import { Stack, StackProps, Duration } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { Function, Runtime, Code } from 'aws-cdk-lib/aws-lambda';
+import { Runtime } from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { Rule, Schedule } from 'aws-cdk-lib/aws-events';
 import { LambdaFunction } from 'aws-cdk-lib/aws-events-targets';
 import { DataStack } from './data-stack';
+import { SERVICES_DIR, nodejsBundling } from './lambda-bundling';
 
 interface ReportingStackProps extends StackProps {
   data: DataStack;
@@ -15,10 +17,13 @@ export class ReportingStack extends Stack {
     super(scope, id, props);
     const { data } = props;
 
-    const reportFn = new Function(this, 'MonthlyReportFn', {
+    // NodejsFunction (esbuild) rather than Code.fromAsset(services/dist) — see
+    // lambda-bundling.ts for why the AWS SDK is bundled into the asset.
+    const reportFn = new NodejsFunction(this, 'MonthlyReportFn', {
       runtime: Runtime.NODEJS_20_X,
-      handler: 'reporting/monthlyReport.handler',
-      code: Code.fromAsset(path.join(__dirname, '..', '..', 'services', 'dist')),
+      entry: path.join(SERVICES_DIR, 'reporting', 'monthlyReport.ts'),
+      handler: 'handler',
+      bundling: nodejsBundling(),
       environment: {
         DONATION_HISTORY_TABLE: data.donationHistoryTable.tableName,
         REPORTS_BUCKET: data.photosBucket.bucketName,

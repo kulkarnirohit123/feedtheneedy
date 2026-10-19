@@ -18,26 +18,51 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: token } : {};
 }
 
-async function checkResponse(res: Response): Promise<Response> {
-  if (res.status === 401) {
-    signOut();
-    throw new SessionExpiredError('Session expired, please sign in again.');
+function expireSession(): never {
+  signOut();
+  throw new SessionExpiredError('Session expired, please sign in again.');
+}
+
+/**
+ * Every call goes through here so that BOTH failure shapes land on the same recovery path:
+ *
+ *  - a readable 401 from the Cognito authorizer, and
+ *  - a network-level fetch rejection.
+ *
+ * The second case is the one that bit us: API Gateway serves an authorizer rejection from its
+ * DEFAULT_4XX gateway response, which carries no CORS header unless the stack adds one
+ * explicitly. The browser then blocks the response before any code can read res.status, so
+ * fetch rejects with an opaque TypeError and the 401 branch never runs. The CDK stack now adds
+ * those headers, and this treats an unreadable response as a probable expiry anyway, so a
+ * future missing-CORS regression degrades to "please sign in again" rather than a dead UI.
+ */
+async function request(path: string, init?: RequestInit): Promise<Response> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, init);
+  } catch {
+    expireSession();
+  }
+
+  if (res.status === 401 || res.status === 403) {
+    expireSession();
+  }
+  if (!res.ok) {
+    throw new Error(`Request to ${path} failed with status ${res.status}`);
   }
   return res;
 }
 
 export async function fetchRequests(): Promise<FoodRequest[]> {
-  const res = await checkResponse(await fetch(`${API_BASE}/requests`, { headers: authHeaders() }));
+  const res = await request('/requests', { headers: authHeaders() });
   const body = await res.json();
   return body.requests;
 }
 
 export async function overrideAssign(requestId: string, driverId: string): Promise<void> {
-  await checkResponse(
-    await fetch(`${API_BASE}/requests/assign`, {
-      method: 'POST',
-      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requestId, driverId }),
-    }),
-  );
+  await request('/requests/assign', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requestId, driverId }),
+  });
 }

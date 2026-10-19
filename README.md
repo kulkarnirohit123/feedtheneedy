@@ -6,31 +6,54 @@ full design.
 
 ## Deploy the backend
 
-0. First-time only: `cd infra && npx cdk bootstrap` (every Lambda here uses
-   `Code.fromAsset`, which needs the CDK toolkit stack deployed to your
+0. First-time only: `cd infra && npx cdk bootstrap` (Lambda assets are
+   uploaded to the CDK toolkit stack, which must exist in your
    account/region once — `cdk deploy` fails with an explicit error telling
    you to run this if you skip it).
-1. `npm install` (repo root — installs all workspaces).
-2. `npm run build:services`
-3. `cd infra && npx cdk deploy --all --require-approval never`
+1. `npm install` (repo root — installs all workspaces, including the
+   `esbuild` that bundles each Lambda).
+2. `cd infra && npx cdk deploy --all --require-approval never`
+   (Lambdas are built by `NodejsFunction`/esbuild straight from the
+   TypeScript sources, so no separate build step is needed. Each bundle
+   includes its AWS SDK clients rather than relying on the managed
+   runtime to provide them.)
 4. From the CDK output, note: the `WhatsAppWebhookApiEndpoint` URL, the
    `AdminApiEndpoint` URL, `AdminUserPoolId`, `AdminUserPoolClientId`, and
    your AWS region.
 5. Register `<WhatsAppWebhookApiEndpoint URL>webhook` (the API's root URL
-   plus the `webhook` resource path — not the bare root URL) as the AWS
-   End User Messaging Social webhook callback for your WhatsApp Business
-   number.
+   plus the `webhook` resource path — not the bare root URL) as the
+   webhook callback for your WhatsApp Business number, using the verify
+   token you set as `metaWebhookVerifyToken` below. Meta will `GET` that
+   URL once with `hub.challenge` to confirm it; the router answers the
+   handshake itself.
 6. `npx ts-node scripts/seed-drivers-fridges.ts`
 
-### Wiring the Bedrock Agent and WhatsApp phone number (once provisioned)
+> **The webhook rejects every request until `metaAppSecret` is set.** Every
+> inbound delivery must carry a valid `X-Hub-Signature-256` HMAC, and the
+> router fails closed (403) while the secret is empty — otherwise the
+> endpoint would be a public command channel able to forge donor offers and
+> hijack a driver's live task token. Set it in step "Wiring Meta
+> credentials" below before testing.
 
-`CLASSIFIER_AGENT_ID`, `CLASSIFIER_AGENT_ALIAS_ID`, and
-`WHATSAPP_ORIGINATION_PHONE_NUMBER_ID` are read from CDK context
-(`infra/lib/pipeline-stack.ts`), defaulting to empty strings. This plan
-does not provision the Bedrock Agent or the WhatsApp phone number
-themselves — provision those manually (console or CLI), then either:
+### Wiring the Bedrock Agent, WhatsApp phone number, and Meta credentials
 
-- redeploy with the real values: `npx cdk deploy --all -c classifierAgentId=<id> -c classifierAgentAliasId=<alias-id> -c whatsappOriginationPhoneNumberId=<phone-id>`, or
+These values are read from CDK context (`infra/lib/pipeline-stack.ts`),
+all defaulting to empty strings:
+
+| context key | env var | what it is |
+| --- | --- | --- |
+| `classifierAgentId` | `CLASSIFIER_AGENT_ID` | Bedrock Agent that classifies inbound donor messages |
+| `classifierAgentAliasId` | `CLASSIFIER_AGENT_ALIAS_ID` | that agent's alias |
+| `whatsappOriginationPhoneNumberId` | `WHATSAPP_ORIGINATION_PHONE_NUMBER_ID` | End User Messaging Social phone-number id used for outbound sends |
+| `metaAppSecret` | `META_APP_SECRET` | Meta app secret — verifies the `X-Hub-Signature-256` on every inbound webhook. **Required**; the webhook 403s without it |
+| `metaWebhookVerifyToken` | `META_WEBHOOK_VERIFY_TOKEN` | any string you choose; must match what you enter in Meta's webhook-registration form |
+| `metaAccessToken` | `META_ACCESS_TOKEN` | Meta Graph API token used to download pickup/fridge photos so they can be archived in S3. Optional — without it the request stores the raw `media:<id>` reference instead of an S3 key |
+
+This plan does not provision the Bedrock Agent or the WhatsApp phone
+number themselves — provision those manually (console or CLI), then
+either:
+
+- redeploy with the real values: `npx cdk deploy --all -c classifierAgentId=<id> -c classifierAgentAliasId=<alias-id> -c whatsappOriginationPhoneNumberId=<phone-id> -c metaAppSecret=<secret> -c metaWebhookVerifyToken=<token> -c metaAccessToken=<token>`, or
 - patch the already-deployed `InboundRouterFn`'s environment directly via
   `aws lambda update-function-configuration` (faster for iterating during
   a demo, but gets overwritten on the next `cdk deploy`).
@@ -73,8 +96,12 @@ hackathon demo, run it locally against the deployed API:
 ## Demo script
 
 ```bash
-WEBHOOK_URL=<WhatsAppWebhookApiEndpoint URL>webhook npx ts-node scripts/simulate-whatsapp.ts donor_offer
-WEBHOOK_URL=<WhatsAppWebhookApiEndpoint URL>webhook npx ts-node scripts/simulate-whatsapp.ts spam
+# META_APP_SECRET must match the deployed metaAppSecret — the harness signs
+# each payload the same way Meta does, or the webhook rejects it with a 403.
+export WEBHOOK_URL=<WhatsAppWebhookApiEndpoint URL>webhook
+export META_APP_SECRET=<same secret you deployed>
+npx ts-node scripts/simulate-whatsapp.ts donor_offer
+npx ts-node scripts/simulate-whatsapp.ts spam
 ```
 
 Watch the `Requests` table: the `donor_offer` scenario should progress

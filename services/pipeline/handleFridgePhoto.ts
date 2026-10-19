@@ -2,6 +2,7 @@
 import { getRequest, getDriverById, getFridgeById, updateRequest } from '../shared/dynamo';
 import { sendWhatsAppText } from '../shared/whatsapp';
 import { InvalidPhotoError } from './handlePickupPhoto';
+import { persistWhatsAppMedia } from '../shared/media';
 
 export async function startWait(event: { requestId: string; taskToken: string }): Promise<void> {
   const req = await getRequest(event.requestId);
@@ -35,14 +36,18 @@ export async function handleResult(
     throw new InvalidPhotoError('No media URL in driver reply');
   }
 
+  // Same archival contract as the pickup photo — see handlePickupPhoto.handleResult.
+  const s3Key = await persistWhatsAppMedia(event.mediaUrl, `photos/${event.requestId}/fridge`);
+  const fridgePhotoUrl = s3Key ?? event.mediaUrl;
+
   await updateRequest(event.requestId, {
     status: 'FRIDGE_PHOTO_CONFIRMED',
-    fridgePhotoUrl: event.mediaUrl,
+    fridgePhotoUrl,
     pendingTaskToken: undefined,
     pendingStep: undefined,
   });
 
-  return { requestId: event.requestId, valid: true, fridgePhotoUrl: event.mediaUrl };
+  return { requestId: event.requestId, valid: true, fridgePhotoUrl };
 }
 
 export const handler = startWait;
