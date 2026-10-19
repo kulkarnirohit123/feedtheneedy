@@ -35,25 +35,23 @@ full design.
 > hijack a driver's live task token. Set it in step "Wiring Meta
 > credentials" below before testing.
 
-### Wiring the Bedrock Agent, WhatsApp phone number, and Meta credentials
+### Wiring the Bedrock model, WhatsApp phone number, and Meta credentials
 
 These values are read from CDK context (`infra/lib/pipeline-stack.ts`),
 all defaulting to empty strings:
 
 | context key | env var | what it is |
 | --- | --- | --- |
-| `classifierAgentId` | `CLASSIFIER_AGENT_ID` | Bedrock Agent that classifies inbound donor messages |
-| `classifierAgentAliasId` | `CLASSIFIER_AGENT_ALIAS_ID` | that agent's alias |
+| `classifierModelId` | `CLASSIFIER_MODEL_ID` | Bedrock model (or inference profile) id used to classify inbound donor messages, e.g. `apac.amazon.nova-lite-v1:0`. Classic Bedrock Agents is in maintenance mode for new accounts, and Anthropic models need an AWS Marketplace agreement this account's entitlements can't complete, so this calls Amazon Nova (first-party, no marketplace step) directly via `InvokeModel`, not an Agent |
 | `whatsappOriginationPhoneNumberId` | `WHATSAPP_ORIGINATION_PHONE_NUMBER_ID` | End User Messaging Social phone-number id used for outbound sends |
 | `metaAppSecret` | `META_APP_SECRET` | Meta app secret — verifies the `X-Hub-Signature-256` on every inbound webhook. **Required**; the webhook 403s without it |
 | `metaWebhookVerifyToken` | `META_WEBHOOK_VERIFY_TOKEN` | any string you choose; must match what you enter in Meta's webhook-registration form |
 | `metaAccessToken` | `META_ACCESS_TOKEN` | Meta Graph API token used to download pickup/fridge photos so they can be archived in S3. Optional — without it the request stores the raw `media:<id>` reference instead of an S3 key |
 
-This plan does not provision the Bedrock Agent or the WhatsApp phone
-number themselves — provision those manually (console or CLI), then
-either:
+This plan does not provision the WhatsApp phone number itself —
+provision that manually (console or CLI), then either:
 
-- redeploy with the real values: `npx cdk deploy --all -c classifierAgentId=<id> -c classifierAgentAliasId=<alias-id> -c whatsappOriginationPhoneNumberId=<phone-id> -c metaAppSecret=<secret> -c metaWebhookVerifyToken=<token> -c metaAccessToken=<token>`, or
+- redeploy with the real values: `npx cdk deploy --all -c classifierModelId=<model-or-profile-id> -c whatsappOriginationPhoneNumberId=<phone-id> -c metaAppSecret=<secret> -c metaWebhookVerifyToken=<token> -c metaAccessToken=<token>`, or
 - patch the already-deployed `InboundRouterFn`'s environment directly via
   `aws lambda update-function-configuration` (faster for iterating during
   a demo, but gets overwritten on the next `cdk deploy`).

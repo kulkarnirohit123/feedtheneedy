@@ -51,7 +51,7 @@ export class PipelineStack extends Stack {
       // NodejsFunction (esbuild) rather than Code.fromAsset(services/dist): the tsc output has
       // no node_modules, so every `require("@aws-sdk/...")` had to be satisfied by whatever the
       // managed runtime happens to ship. AWS does not guarantee client-socialmessaging or
-      // client-bedrock-agent-runtime are present, so a cold start could fail outright with
+      // client-bedrock-runtime are present, so a cold start could fail outright with
       // Runtime.ImportModuleError. See lambda-bundling.ts for why the SDK is bundled, not
       // externalised.
       const fn = new NodejsFunction(this, name, {
@@ -94,16 +94,16 @@ export class PipelineStack extends Stack {
     const flagStuckRequestFn = makeFn('FlagStuckRequestFn', 'pipeline/flagStuckRequest');
     const inboundRouterFn = makeFn('InboundRouterFn', 'inbound-router/handler');
 
-    // Only InboundRouterFn classifies inbound text, so only it needs Bedrock Agent access.
-    // No specific agent ARN exists at this stack's synth time (the Agent itself isn't
-    // provisioned by this CDK app — see Task 22's README for the manual post-deploy step),
-    // so this is scoped to '*'.
+    // Only InboundRouterFn classifies inbound text, so only it needs Bedrock model access.
+    // Classic Bedrock Agents is in maintenance mode for new accounts (CreateAgent blocked), so
+    // classification is a direct InvokeModel call against a Claude Haiku inference profile
+    // rather than an orchestrated Agent. Scoped to '*' since the inference profile ARN varies
+    // by region/account and isn't known at this stack's synth time.
     inboundRouterFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['bedrock:InvokeAgent'],
+      actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream', 'bedrock:GetInferenceProfile'],
       resources: ['*'],
     }));
-    inboundRouterFn.addEnvironment('CLASSIFIER_AGENT_ID', this.node.tryGetContext('classifierAgentId') ?? '');
-    inboundRouterFn.addEnvironment('CLASSIFIER_AGENT_ALIAS_ID', this.node.tryGetContext('classifierAgentAliasId') ?? '');
+    inboundRouterFn.addEnvironment('CLASSIFIER_MODEL_ID', this.node.tryGetContext('classifierModelId') ?? '');
     // Meta app credentials: the App Secret signs every inbound webhook (X-Hub-Signature-256),
     // the verify token answers Meta's GET registration handshake. Both live in the Meta app
     // console, not in this CDK app, so they use the same empty-string context seam as the

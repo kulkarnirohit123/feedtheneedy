@@ -179,13 +179,13 @@ test('InboundRouterFn is granted both StartExecution and the SendTask* trio on t
   });
 });
 
-test('InboundRouterFn is granted social-messaging:SendWhatsAppMessage and bedrock:InvokeAgent', () => {
+test('InboundRouterFn is granted social-messaging:SendWhatsAppMessage and bedrock:InvokeModel', () => {
   const template = synthPipeline();
   template.hasResourceProperties('AWS::IAM::Policy', {
     PolicyDocument: Match.objectLike({
       Statement: Match.arrayWith([
         Match.objectLike({ Action: 'social-messaging:SendWhatsAppMessage', Effect: 'Allow' }),
-        Match.objectLike({ Action: 'bedrock:InvokeAgent', Effect: 'Allow' }),
+        Match.objectLike({ Action: Match.arrayWith(['bedrock:InvokeModel']), Effect: 'Allow' }),
       ]),
     }),
   });

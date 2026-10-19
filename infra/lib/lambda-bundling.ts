@@ -13,7 +13,7 @@ export const SERVICES_DIR = path.join(__dirname, '..', '..', 'services');
  * `bundleAwsSDK: true` is the load-bearing part. NodejsFunction's default for a Node 18+
  * runtime is to treat every `@aws-sdk/*` import as external, on the assumption the managed
  * runtime provides it. AWS only guarantees that for a subset of clients — notably NOT
- * `@aws-sdk/client-socialmessaging` or `@aws-sdk/client-bedrock-agent-runtime`, both of which
+ * `@aws-sdk/client-socialmessaging` or `@aws-sdk/client-bedrock-runtime`, both of which
  * these handlers import. Leaving them external risks a cold-start Runtime.ImportModuleError,
  * so the SDK is bundled into the asset instead. The cost is a larger artifact; the benefit is
  * that the deployed code depends on nothing the runtime might not ship.
