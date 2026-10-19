@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { CSSProperties, useCallback, useEffect, useState } from 'react';
 import { fetchRequests, overrideAssign, FoodRequest, SessionExpiredError } from '../api';
 import { signOut } from '../auth';
 
@@ -9,6 +9,25 @@ import { signOut } from '../auth';
  */
 const FALLBACK_DRIVER_ID = 'driver-2';
 const NOOP = () => {};
+
+const DEFAULT_STATUS_STYLE = statusVars('var(--steel)', 'var(--steel-tint)', 'var(--steel)');
+
+const STATUS_STYLE: Record<string, CSSProperties> = {
+  RECEIVED: DEFAULT_STATUS_STYLE,
+  PENDING_REVIEW: DEFAULT_STATUS_STYLE,
+  REJECTED_SPAM: statusVars('var(--rust)', 'var(--rust-tint)', 'var(--rust-dark)'),
+  MATCHING: statusVars('var(--marigold)', 'var(--marigold-tint)', 'var(--marigold-dark)'),
+  DRIVER_ASSIGNED: statusVars('var(--marigold)', 'var(--marigold-tint)', 'var(--marigold-dark)'),
+  DRIVER_ACCEPTED: statusVars('var(--marigold)', 'var(--marigold-tint)', 'var(--marigold-dark)'),
+  PICKUP_PHOTO_CONFIRMED: statusVars('var(--sprout)', 'var(--sprout-tint)', 'var(--sprout)'),
+  FRIDGE_MATCHED: statusVars('var(--sprout)', 'var(--sprout-tint)', 'var(--sprout)'),
+  FRIDGE_PHOTO_CONFIRMED: statusVars('var(--sprout)', 'var(--sprout-tint)', 'var(--sprout)'),
+  COMPLETE: statusVars('var(--leaf)', 'var(--leaf-tint)', 'var(--leaf)'),
+};
+
+function statusVars(color: string, tint: string, text: string): CSSProperties {
+  return { '--status-color': color, '--status-tint': tint, '--status-text': text } as CSSProperties;
+}
 
 export function Dashboard({ onSignedOut = NOOP }: { onSignedOut?: () => void }) {
   const [requests, setRequests] = useState<FoodRequest[]>([]);
@@ -57,22 +76,53 @@ export function Dashboard({ onSignedOut = NOOP }: { onSignedOut?: () => void }) 
   }
 
   return (
-    <div>
-      <h1>Live Pickup Requests</h1>
-      <button onClick={handleSignOut}>Sign out</button>
-      <button onClick={() => void load()}>Refresh</button>
-      {error && <p role="alert">{error}</p>}
-      <ul>
-        {requests.map((r) => (
-          <li key={r.requestId}>
-            {r.requestId} — {r.status} — {r.qty} of {r.foodType}
-            {r.driverId ? ` — ${r.driverId}` : ''}
-            <button onClick={() => handleReassign(r.requestId)} disabled={busyRequestId === r.requestId}>
-              Reassign
-            </button>
-          </li>
-        ))}
-      </ul>
+    <div className="app-shell">
+      <header className="board-header">
+        <div className="board-brand">
+          <h1>Feed the Needy</h1>
+          <p>Pickup dispatch board</p>
+        </div>
+        <div className="board-actions">
+          <button className="btn btn-ghost-on-leaf" onClick={() => void load()}>
+            Refresh
+          </button>
+          <button className="btn btn-ghost-on-leaf" onClick={handleSignOut}>
+            Sign out
+          </button>
+        </div>
+      </header>
+
+      {error && (
+        <p className="alert-strip" role="alert">
+          {error}
+        </p>
+      )}
+
+      <main className="ledger">
+        {requests.length === 0 && !error ? (
+          <p className="ledger-empty">No pickup requests yet.</p>
+        ) : (
+          <ul className="ledger-list">
+            {requests.map((r) => (
+              <li key={r.requestId} className="ledger-row" style={STATUS_STYLE[r.status] ?? DEFAULT_STATUS_STYLE}>
+                <span className="req-id">{r.requestId}</span>
+                <span className="status-tag">{r.status}</span>
+                <span className="ledger-detail">
+                  {r.qty} of {r.foodType}
+                </span>
+                {r.driverId ? <span className="driver-chip">{r.driverId}</span> : null}
+                <button
+                  className="btn btn-primary"
+                  onClick={() => handleReassign(r.requestId)}
+                  disabled={busyRequestId === r.requestId}
+                >
+                  Reassign
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </main>
     </div>
   );
 }

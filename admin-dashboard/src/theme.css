@@ -1,0 +1,286 @@
+/*
+  Feed the Needy — dispatch board theme.
+  Palette grounded in the handoff itself: banana-leaf green (the donor's
+  packed leftovers), steel tiffin-box grey-blue (the pickup container),
+  marigold (garlands sold at the same markets these vendors trade in),
+  unbleached cotton/chalk paper (the manifest this board replaces).
+*/
+
+:root {
+  --ink: #1c2321;
+  --leaf: #2f4b3c;
+  --leaf-tint: #dce6de;
+  --steel: #44586b;
+  --steel-tint: #e4eaef;
+  --marigold: #e8a33d;
+  --marigold-dark: #8a5a14;
+  --marigold-tint: #fbe8c8;
+  --sprout: #4c7a34;
+  --sprout-tint: #e3eeda;
+  --rust: #b23a2e;
+  --rust-dark: #7a2720;
+  --rust-tint: #f6dad6;
+  --chalk: #f7f3e8;
+  --chalk-line: #e3ddcc;
+
+  --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-data: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--chalk);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: var(--font-ui);
+}
+
+.app-shell {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- Header / brand ---------- */
+
+.board-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  background: var(--leaf);
+  color: var(--chalk);
+  padding: 1.1rem 1.5rem;
+}
+
+.board-brand {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.board-brand h1 {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.board-brand p {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #c8d6cb;
+}
+
+.board-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.btn {
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  padding: 0.45rem 0.9rem;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.btn-ghost-on-leaf {
+  background: transparent;
+  border-color: #5e7c6a;
+  color: var(--chalk);
+}
+
+.btn-ghost-on-leaf:hover:not(:disabled) {
+  background: #3c5c4a;
+}
+
+.btn-primary {
+  background: var(--marigold);
+  border-color: var(--marigold);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #d99626;
+}
+
+/* ---------- Alert strip ---------- */
+
+.alert-strip {
+  margin: 0;
+  background: var(--rust);
+  color: var(--chalk);
+  padding: 0.65rem 1.5rem;
+  font-size: 0.88rem;
+}
+
+/* ---------- Ledger ---------- */
+
+.ledger {
+  flex: 1;
+  padding: 0.5rem 1.5rem 2rem;
+}
+
+.ledger-empty {
+  color: var(--steel);
+  font-size: 0.9rem;
+  padding: 1.5rem 0;
+}
+
+.ledger-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--chalk-line);
+}
+
+.ledger-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 0.25rem;
+  border-bottom: 1px solid var(--chalk-line);
+  border-left: 4px solid var(--status-color, var(--steel));
+  padding-left: 0.75rem;
+}
+
+.ledger-row:hover {
+  background: #efe9da;
+}
+
+.req-id {
+  font-family: var(--font-data);
+  font-size: 0.85rem;
+  color: var(--steel);
+  width: 5.5rem;
+  flex-shrink: 0;
+}
+
+.status-tag {
+  font-family: var(--font-data);
+  font-size: 0.72rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 3px;
+  background: var(--status-tint, var(--steel-tint));
+  color: var(--status-text, var(--steel));
+  white-space: nowrap;
+}
+
+.ledger-detail {
+  flex: 1;
+  font-size: 0.9rem;
+  min-width: 0;
+}
+
+.driver-chip {
+  font-family: var(--font-data);
+  font-size: 0.8rem;
+  color: var(--leaf);
+  background: var(--leaf-tint);
+  padding: 0.2rem 0.5rem;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* ---------- Login ---------- */
+
+.login-shell {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--leaf);
+  padding: 1.5rem;
+}
+
+.login-card {
+  background: var(--chalk);
+  padding: 2rem 2.25rem;
+  border-radius: 4px;
+  width: 100%;
+  max-width: 22rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.login-card h1 {
+  margin: 0 0 0.15rem;
+  font-size: 1.15rem;
+  color: var(--leaf);
+}
+
+.login-tagline {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: var(--steel);
+}
+
+.login-card label {
+  font-size: 0.78rem;
+  color: var(--steel);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.login-card input {
+  font-family: var(--font-ui);
+  font-size: 0.95rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--chalk-line);
+  border-radius: 3px;
+  background: #fff;
+  color: var(--ink);
+}
+
+.login-card input:focus-visible,
+.btn:focus-visible {
+  outline: 2px solid var(--marigold);
+  outline-offset: 1px;
+}
+
+.login-card .btn-primary {
+  margin-top: 0.3rem;
+}
+
+.login-card [role='alert'] {
+  margin: 0;
+  color: var(--rust-dark);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 480px) {
+  .ledger-row {
+    flex-wrap: wrap;
+  }
+
+  .ledger-detail {
+    order: 3;
+    flex-basis: 100%;
+  }
+}
