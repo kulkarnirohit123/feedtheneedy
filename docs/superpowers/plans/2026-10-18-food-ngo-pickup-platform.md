@@ -2918,12 +2918,18 @@ git commit -m "feat: add Cognito admin auth and admin REST API (list + override 
 
 **Files:**
 - Create: `admin-dashboard/src/api.ts`
+- Create: `admin-dashboard/src/auth.ts`
+- Create: `admin-dashboard/src/pages/Login.tsx`
 - Create: `admin-dashboard/src/pages/Dashboard.tsx`
+- Create: `admin-dashboard/src/App.tsx`
+- Modify: `infra/lib/auth-stack.ts` (add `authFlows: { userPassword: true }` to the `UserPoolClient` — required for `auth.ts`'s direct `InitiateAuthCommand` sign-in; CDK's `UserPoolClient` default only enables SRP/custom/refresh-token flows, not `USER_PASSWORD_AUTH`)
+- Modify: `infra/lib/auth-stack.test.ts` (append an assertion for the auth flow)
 - Test: `admin-dashboard/src/pages/Dashboard.test.tsx`
 
 **Interfaces:**
-- Consumes: Admin API `GET /requests` and `POST /requests/assign` (Task 18).
-- Produces: `fetchRequests(): Promise<FoodRequest[]>`, `overrideAssign(requestId: string, driverId: string): Promise<void>` (`api.ts`); `<Dashboard />` component rendering the live list with a reassign control, used as the app's main route (wiring the router/entrypoint is this task's own concern, not a dependency of later tasks).
+- Consumes: Admin API `GET /requests` and `POST /requests/assign` (Task 18, both behind a Cognito authorizer — every call MUST carry a valid ID token in the `Authorization` header or API Gateway returns 401).
+- Produces: `signIn(username, password): Promise<void>`, `getIdToken(): string | null`, `signOut(): void` (`auth.ts` — a direct `InitiateAuthCommand(AuthFlow: 'USER_PASSWORD_AUTH')` call against the Cognito User Pool, no Amplify/hosted-UI dependency, appropriate for a lean hackathon app already using plain `fetch`). `fetchRequests(): Promise<FoodRequest[]>`, `overrideAssign(requestId: string, driverId: string): Promise<void>` (`api.ts`, both attaching `Authorization: getIdToken()`); `<Login onSignedIn={...} />`, `<Dashboard />`, and `<App />` gating the dashboard behind a signed-in state — used as the app's main route (wiring the bundler entrypoint/`main.tsx` is this task's own concern, not a dependency of later tasks).
+- **Why this exists:** Task 18's `AuthStack`/`AdminApiStack` were built and reviewed before any task actually implemented a sign-in flow — without this, the dashboard would call a Cognito-gated API with no token and get 401 on every request. This task closes that gap.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2952,15 +2958,107 @@ test('renders fetched requests and triggers override assign on click', async () 
 });
 ```
 
+```typescript
+// append to infra/lib/auth-stack.test.ts
+test('app client allows direct username/password sign-in', () => {
+  const app = new App();
+  const stack = new AuthStack(app, 'TestAuthStack2');
+  const template = Template.fromStack(stack);
+  template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+    ExplicitAuthFlows: Match.arrayWith(['ALLOW_USER_PASSWORD_AUTH']),
+  });
+});
+```
+
+(This test needs `Match` imported from `aws-cdk-lib/assertions` alongside the existing `Template` import.)
+
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd admin-dashboard && npx vitest run src/pages/Dashboard.test.tsx`
-Expected: FAIL — `Cannot find module './Dashboard'`
+Run: `cd admin-dashboard && npx vitest run src/pages/Dashboard.test.tsx` and `cd infra && npx jest lib/auth-stack.test.ts`
+Expected: FAIL — `Cannot find module './Dashboard'`; the new auth-stack test fails because `ExplicitAuthFlows` isn't set yet
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```typescript
+// infra/lib/auth-stack.ts — modify the UserPoolClient construction
+this.userPoolClient = new UserPoolClient(this, 'AdminUserPoolClient', {
+  userPool: this.userPool,
+  generateSecret: false,
+  authFlows: { userPassword: true },
+});
+```
+
+```typescript
+// admin-dashboard/src/auth.ts
+import { CognitoIdentityProviderClient, InitiateAuthCommand } from '@aws-sdk/client-cognito-identity-provider';
+
+const REGION = import.meta.env.VITE_AWS_REGION as string;
+const USER_POOL_CLIENT_ID = import.meta.env.VITE_USER_POOL_CLIENT_ID as string;
+const client = new CognitoIdentityProviderClient({ region: REGION });
+
+let idToken: string | null = typeof localStorage !== 'undefined' ? localStorage.getItem('idToken') : null;
+
+export function getIdToken(): string | null {
+  return idToken;
+}
+
+export async function signIn(username: string, password: string): Promise<void> {
+  const res = await client.send(
+    new InitiateAuthCommand({
+      AuthFlow: 'USER_PASSWORD_AUTH',
+      ClientId: USER_POOL_CLIENT_ID,
+      AuthParameters: { USERNAME: username, PASSWORD: password },
+    }),
+  );
+  const token = res.AuthenticationResult?.IdToken;
+  if (!token) throw new Error('Sign-in failed: no ID token returned');
+  idToken = token;
+  localStorage.setItem('idToken', token);
+}
+
+export function signOut(): void {
+  idToken = null;
+  localStorage.removeItem('idToken');
+}
+```
+
+```tsx
+// admin-dashboard/src/pages/Login.tsx
+import { useState, FormEvent } from 'react';
+import { signIn } from '../auth';
+
+export function Login({ onSignedIn }: { onSignedIn: () => void }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    try {
+      await signIn(username, password);
+      onSignedIn();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sign-in failed');
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <h1>Admin Login</h1>
+      <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Email" />
+      <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Password" />
+      <button type="submit">Sign in</button>
+      {error && <p role="alert">{error}</p>}
+    </form>
+  );
+}
+```
+
+```typescript
 // admin-dashboard/src/api.ts
+import { getIdToken } from './auth';
+
 const API_BASE = import.meta.env.VITE_ADMIN_API_URL as string;
 
 export interface FoodRequest {
@@ -2972,8 +3070,13 @@ export interface FoodRequest {
   driverId?: string;
 }
 
+function authHeaders(): Record<string, string> {
+  const token = getIdToken();
+  return token ? { Authorization: token } : {};
+}
+
 export async function fetchRequests(): Promise<FoodRequest[]> {
-  const res = await fetch(`${API_BASE}/requests`);
+  const res = await fetch(`${API_BASE}/requests`, { headers: authHeaders() });
   const body = await res.json();
   return body.requests;
 }
@@ -2981,6 +3084,7 @@ export async function fetchRequests(): Promise<FoodRequest[]> {
 export async function overrideAssign(requestId: string, driverId: string): Promise<void> {
   await fetch(`${API_BASE}/requests/assign`, {
     method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ requestId, driverId }),
   });
 }
@@ -3020,19 +3124,39 @@ export function Dashboard() {
 }
 ```
 
+```tsx
+// admin-dashboard/src/App.tsx
+import { useState } from 'react';
+import { Login } from './pages/Login';
+import { Dashboard } from './pages/Dashboard';
+import { getIdToken } from './auth';
+
+export function App() {
+  const [signedIn, setSignedIn] = useState(!!getIdToken());
+
+  if (!signedIn) {
+    return <Login onSignedIn={() => setSignedIn(true)} />;
+  }
+  return <Dashboard />;
+}
+```
+
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd admin-dashboard && npx vitest run src/pages/Dashboard.test.tsx`
+Run: `cd admin-dashboard && npx vitest run src/pages/Dashboard.test.tsx` and `cd infra && npx jest lib/auth-stack.test.ts`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add admin-dashboard/src/api.ts admin-dashboard/src/pages/Dashboard.tsx admin-dashboard/src/pages/Dashboard.test.tsx
-git commit -m "feat: add admin dashboard live requests view with reassign override"
+git add admin-dashboard/src/api.ts admin-dashboard/src/auth.ts admin-dashboard/src/App.tsx \
+  admin-dashboard/src/pages/Dashboard.tsx admin-dashboard/src/pages/Login.tsx \
+  admin-dashboard/src/pages/Dashboard.test.tsx \
+  infra/lib/auth-stack.ts infra/lib/auth-stack.test.ts
+git commit -m "feat: add admin dashboard live requests view, sign-in flow, and reassign override"
 ```
 
-Note: the `RequestDetail.tsx` driver-picker (replacing `FALLBACK_DRIVER_ID` with a real `<DriverSelect>` dropdown) is a quick follow-up once Task 18's API is live — not blocking for the demo, since the hardcoded fallback still exercises the real override-assign call end-to-end.
+Note: the `RequestDetail.tsx` driver-picker (replacing `FALLBACK_DRIVER_ID` with a real `<DriverSelect>` dropdown) is a quick follow-up once Task 18's API is live — not blocking for the demo, since the hardcoded fallback still exercises the real override-assign call end-to-end. The admin user account itself (a Cognito user in the pool with a password) is created out-of-band via AWS CLI/console after deploy — this task only builds the sign-in UI and wiring, not user provisioning.
 
 ---
 
