@@ -1,4 +1,4 @@
-import { Stack, StackProps } from 'aws-cdk-lib';
+import { Stack, StackProps, CfnOutput } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { UserPool, UserPoolClient } from 'aws-cdk-lib/aws-cognito';
 
@@ -19,5 +19,8 @@ export class AuthStack extends Stack {
       generateSecret: false,
       authFlows: { userPassword: true },
     });
+
+    new CfnOutput(this, 'AdminUserPoolId', { value: this.userPool.userPoolId });
+    new CfnOutput(this, 'AdminUserPoolClientId', { value: this.userPoolClient.userPoolClientId });
   }
 }
