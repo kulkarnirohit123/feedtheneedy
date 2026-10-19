@@ -9,5 +9,5 @@ export function App() {
   if (!signedIn) {
     return <Login onSignedIn={() => setSignedIn(true)} />;
   }
-  return <Dashboard />;
+  return <Dashboard onSignedOut={() => setSignedIn(false)} />;
 }

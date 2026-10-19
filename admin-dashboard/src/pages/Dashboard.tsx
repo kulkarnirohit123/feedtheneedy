@@ -1,22 +1,37 @@
 import { useEffect, useState } from 'react';
-import { fetchRequests, overrideAssign, FoodRequest } from '../api';
+import { fetchRequests, overrideAssign, FoodRequest, SessionExpiredError } from '../api';
+import { signOut } from '../auth';
 
 const FALLBACK_DRIVER_ID = 'driver-2';
 
-export function Dashboard() {
+export function Dashboard({ onSignedOut = () => {} }: { onSignedOut?: () => void }) {
   const [requests, setRequests] = useState<FoodRequest[]>([]);
 
   useEffect(() => {
-    fetchRequests().then(setRequests);
-  }, []);
+    fetchRequests()
+      .then(setRequests)
+      .catch((err) => {
+        if (err instanceof SessionExpiredError) onSignedOut();
+      });
+  }, [onSignedOut]);
 
   async function handleReassign(requestId: string) {
-    await overrideAssign(requestId, FALLBACK_DRIVER_ID);
+    try {
+      await overrideAssign(requestId, FALLBACK_DRIVER_ID);
+    } catch (err) {
+      if (err instanceof SessionExpiredError) onSignedOut();
+    }
+  }
+
+  function handleSignOut() {
+    signOut();
+    onSignedOut();
   }
 
   return (
     <div>
       <h1>Live Pickup Requests</h1>
+      <button onClick={handleSignOut}>Sign out</button>
       <ul>
         {requests.map((r) => (
           <li key={r.requestId}>
