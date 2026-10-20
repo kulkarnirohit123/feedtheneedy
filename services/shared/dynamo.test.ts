@@ -1,7 +1,7 @@
 // services/shared/dynamo.test.ts
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { putRequest, getRequest, getDriverByPhone, getDriverById, getFridgeById, findActiveRequestByDriverPhone, updateRequest, scanAllRequests } from './dynamo';
+import { putRequest, getRequest, getDriverByPhone, getDriverById, getFridgeById, findActiveRequestByDriverPhone, findPendingLocationRequest, updateRequest, scanAllRequests } from './dynamo';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 
@@ -72,6 +72,23 @@ test('findActiveRequestByDriverPhone ignores a COMPLETE request for that driver'
     Items: [{ requestId: 'req-old', driverId: 'd1', status: 'COMPLETE' }],
   });
   const result = await findActiveRequestByDriverPhone('+91driver');
+  expect(result).toBeNull();
+});
+
+test('findPendingLocationRequest returns the most recent matching request', async () => {
+  ddbMock.on(ScanCommand, { TableName: 'Requests' }).resolves({
+    Items: [
+      { requestId: 'req-older', donorPhone: '+91999', status: 'PENDING_REVIEW', awaitingLocation: true, createdAt: '2026-01-01T00:00:00.000Z' },
+      { requestId: 'req-newer', donorPhone: '+91999', status: 'PENDING_REVIEW', awaitingLocation: true, createdAt: '2026-01-02T00:00:00.000Z' },
+    ],
+  });
+  const result = await findPendingLocationRequest('+91999');
+  expect(result?.requestId).toBe('req-newer');
+});
+
+test('findPendingLocationRequest returns null when nothing is waiting', async () => {
+  ddbMock.on(ScanCommand, { TableName: 'Requests' }).resolves({ Items: [] });
+  const result = await findPendingLocationRequest('+91999');
   expect(result).toBeNull();
 });
 

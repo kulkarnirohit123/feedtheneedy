@@ -1,7 +1,14 @@
 import { randomUUID } from 'crypto';
 import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
 import { classifyMessage, checkGuardrail, ClassifierError } from './classifier';
-import { putRequest, putSpamLog, hasProcessedMessage, markMessageProcessed } from '../shared/dynamo';
+import {
+  putRequest,
+  updateRequest,
+  putSpamLog,
+  hasProcessedMessage,
+  markMessageProcessed,
+  findPendingLocationRequest,
+} from '../shared/dynamo';
 import { sendWhatsAppText } from '../shared/whatsapp';
 import { FoodRequest } from '../shared/types';
 
@@ -33,6 +40,25 @@ export async function handleDonorMessage(input: InboundDonorMessage): Promise<vo
   }
 
   const now = new Date().toISOString();
+
+  // Real WhatsApp sends a shared location as its own message, with no text — it never arrives
+  // bundled with the donor's original text the way the dev simulator shortcuts it. So a
+  // text-less, geo-bearing delivery is matched back to whichever PENDING_REVIEW request from
+  // this phone is still waiting on a location (see FoodRequest.awaitingLocation), rather than
+  // being classified (there's no text to classify) or treated as a new offer.
+  if (!input.text.trim() && input.geo) {
+    const pending = await findPendingLocationRequest(input.fromPhone);
+    if (pending) {
+      await updateRequest(pending.requestId, {
+        geo: input.geo,
+        status: 'MATCHING',
+        awaitingLocation: undefined,
+      });
+      await startPickupExecution(pending.requestId);
+    }
+    await markMessageProcessed(input.messageId);
+    return;
+  }
 
   if (await checkGuardrail(input.text)) {
     await putSpamLog({
@@ -76,6 +102,7 @@ export async function handleDonorMessage(input: InboundDonorMessage): Promise<vo
       ...(input.geo ? { geo: input.geo } : {}),
       ...(result.extracted?.locationText ? { locationText: result.extracted.locationText } : {}),
       status: canDispatch ? 'MATCHING' : 'PENDING_REVIEW',
+      ...(isConfident && !canDispatch ? { awaitingLocation: true } : {}),
       createdAt: now,
       updatedAt: now,
       reassignCount: 0,

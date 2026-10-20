@@ -41,6 +41,13 @@ export interface FoodRequest {
   lastInboundMessageId?: string;
   triedDriverIds?: string[];
   month?: string;
+  /**
+   * Set when a confident offer landed in PENDING_REVIEW only for lack of a geo, and the donor
+   * was asked to share their location. Real WhatsApp sends a location share as its own webhook
+   * delivery (no text), so the follow-up has to be matched back to this request by phone number
+   * rather than arriving bundled with the original text like the dev simulator does.
+   */
+  awaitingLocation?: boolean;
 }
 
 export interface Driver {

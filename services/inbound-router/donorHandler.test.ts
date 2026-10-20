@@ -113,6 +113,61 @@ test('low confidence offer goes to PENDING_REVIEW, no dispatch', async () => {
   expect(sfnMock.commandCalls(StartExecutionCommand)).toHaveLength(0);
 });
 
+// --- real WhatsApp sends a shared location as its own text-less message ---
+
+test('a text-less location message merges into the donor\'s pending request and dispatches', async () => {
+  mockedDynamo.hasProcessedMessage.mockResolvedValue(false);
+  mockedDynamo.findPendingLocationRequest.mockResolvedValue({
+    requestId: 'req-waiting',
+    donorPhone: '+91999',
+    qty: '20 plates',
+    foodType: 'vada pav',
+    status: 'PENDING_REVIEW',
+    awaitingLocation: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    reassignCount: 0,
+  });
+
+  await handleDonorMessage({ messageId: 'm-loc', fromPhone: '+91999', text: '', geo: { lat: 1, lng: 2 } });
+
+  expect(mockedClassifier.classifyMessage).not.toHaveBeenCalled();
+  expect(mockedDynamo.updateRequest).toHaveBeenCalledWith(
+    'req-waiting',
+    expect.objectContaining({ geo: { lat: 1, lng: 2 }, status: 'MATCHING', awaitingLocation: undefined }),
+  );
+  expect(sfnMock.commandCalls(StartExecutionCommand)).toHaveLength(1);
+  expect(mockedDynamo.markMessageProcessed).toHaveBeenCalledWith('m-loc');
+});
+
+test('a text-less location message with no pending request is a no-op, not a new offer', async () => {
+  mockedDynamo.hasProcessedMessage.mockResolvedValue(false);
+  mockedDynamo.findPendingLocationRequest.mockResolvedValue(null);
+
+  await handleDonorMessage({ messageId: 'm-loc2', fromPhone: '+91999', text: '', geo: { lat: 1, lng: 2 } });
+
+  expect(mockedClassifier.classifyMessage).not.toHaveBeenCalled();
+  expect(mockedDynamo.putRequest).not.toHaveBeenCalled();
+  expect(mockedDynamo.updateRequest).not.toHaveBeenCalled();
+  expect(sfnMock.commandCalls(StartExecutionCommand)).toHaveLength(0);
+  expect(mockedDynamo.markMessageProcessed).toHaveBeenCalledWith('m-loc2');
+});
+
+test('a confident offer with no geo is flagged awaitingLocation so the later geo-only message can find it', async () => {
+  mockedDynamo.hasProcessedMessage.mockResolvedValue(false);
+  mockedClassifier.classifyMessage.mockResolvedValue({
+    verdict: 'food_donation_offer',
+    confidence: 0.95,
+    extracted: { qty: '20 plates', foodType: 'vada pav', locationText: 'Koramangala' },
+  });
+
+  await handleDonorMessage({ messageId: 'm-wait', fromPhone: '+91999', text: '20 vada pav leftover' });
+
+  const created = mockedDynamo.putRequest.mock.calls[0][0];
+  expect(created.status).toBe('PENDING_REVIEW');
+  expect(created.awaitingLocation).toBe(true);
+});
+
 test('a guardrail-blocked message is logged and dropped before classification ever runs', async () => {
   mockedDynamo.hasProcessedMessage.mockResolvedValue(false);
   mockedClassifier.checkGuardrail.mockResolvedValue(true);

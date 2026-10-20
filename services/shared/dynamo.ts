@@ -86,6 +86,25 @@ export async function findActiveRequestByDriverPhone(phone: string): Promise<Foo
   return active[0] ?? null;
 }
 
+/**
+ * Finds the most recent PENDING_REVIEW request from this donor that's waiting on a location
+ * follow-up (see FoodRequest.awaitingLocation). A Scan is fine at this table's hackathon-demo
+ * scale — see findActiveRequestByDriverPhone for the same tradeoff already made here.
+ */
+export async function findPendingLocationRequest(donorPhone: string): Promise<FoodRequest | null> {
+  const res = await client.send(
+    new ScanCommand({
+      TableName: REQUESTS_TABLE,
+      FilterExpression: 'donorPhone = :p AND #s = :pending AND awaitingLocation = :t',
+      ExpressionAttributeNames: { '#s': 'status' },
+      ExpressionAttributeValues: { ':p': donorPhone, ':pending': 'PENDING_REVIEW', ':t': true },
+    }),
+  );
+  const items = (res.Items as FoodRequest[]) ?? [];
+  items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return items[0] ?? null;
+}
+
 export async function putSpamLog(entry: {
   msgId: string;
   phone: string;
