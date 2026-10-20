@@ -1,8 +1,19 @@
-import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
+import { BedrockRuntimeClient, InvokeModelCommand, ApplyGuardrailCommand } from '@aws-sdk/client-bedrock-runtime';
 import { ClassifierResult, ClassifierVerdict } from '../shared/types';
 
 const client = new BedrockRuntimeClient({});
 const MODEL_ID = process.env.CLASSIFIER_MODEL_ID ?? '';
+
+// Read lazily, not as a module-level const like MODEL_ID: tests exercise both the
+// guardrail-configured and guardrail-unconfigured (fail-open) paths within the same file, and a
+// frozen const captured at import time can't reflect a per-test env change.
+function guardrailId(): string {
+  return process.env.CLASSIFIER_GUARDRAIL_ID ?? '';
+}
+
+function guardrailVersion(): string {
+  return process.env.CLASSIFIER_GUARDRAIL_VERSION ?? '';
+}
 
 const KNOWN_VERDICTS: ClassifierVerdict[] = [
   'food_donation_offer',
@@ -39,6 +50,36 @@ Respond with ONLY one JSON object and nothing else — no prose, no markdown cod
 confidence is a number from 0 to 1 reflecting how certain you are. Omit the "extracted" key entirely for every verdict other than food_donation_offer, and omit any of its sub-fields you could not find in the text.`;
 
 export class ClassifierError extends Error {}
+
+/**
+ * Runs the raw inbound text through a Bedrock Guardrail (prompt-injection + content filters)
+ * before it ever reaches the classifier prompt. Returns true when the guardrail intervened —
+ * the caller should treat that the same as spam rather than attempt classification.
+ *
+ * Fails open (false) when no guardrail is configured, or when the ApplyGuardrail call itself
+ * fails — a missing/broken guardrail must not block the whole intake line.
+ */
+export async function checkGuardrail(text: string): Promise<boolean> {
+  const id = guardrailId();
+  const version = guardrailVersion();
+  if (!id || !version) {
+    return false;
+  }
+  try {
+    const response = await client.send(
+      new ApplyGuardrailCommand({
+        guardrailIdentifier: id,
+        guardrailVersion: version,
+        source: 'INPUT',
+        content: [{ text: { text } }],
+      }),
+    );
+    return response.action === 'GUARDRAIL_INTERVENED';
+  } catch (err) {
+    console.error('Guardrail check failed, failing open', err);
+    return false;
+  }
+}
 
 export async function classifyMessage(text: string): Promise<ClassifierResult> {
   try {

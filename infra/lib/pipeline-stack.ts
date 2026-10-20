@@ -96,14 +96,26 @@ export class PipelineStack extends Stack {
 
     // Only InboundRouterFn classifies inbound text, so only it needs Bedrock model access.
     // Classic Bedrock Agents is in maintenance mode for new accounts (CreateAgent blocked), so
-    // classification is a direct InvokeModel call against a Claude Haiku inference profile
+    // classification is a direct InvokeModel call against an Amazon Nova inference profile
     // rather than an orchestrated Agent. Scoped to '*' since the inference profile ARN varies
     // by region/account and isn't known at this stack's synth time.
     inboundRouterFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream', 'bedrock:GetInferenceProfile'],
+      actions: [
+        'bedrock:InvokeModel',
+        'bedrock:InvokeModelWithResponseStream',
+        'bedrock:GetInferenceProfile',
+        'bedrock:ApplyGuardrail',
+      ],
       resources: ['*'],
     }));
     inboundRouterFn.addEnvironment('CLASSIFIER_MODEL_ID', this.node.tryGetContext('classifierModelId') ?? '');
+    // A Bedrock Guardrail validates raw inbound text (prompt-injection + content filters) before
+    // it reaches the classifier prompt. Optional: classifier.ts fails open when unset.
+    inboundRouterFn.addEnvironment('CLASSIFIER_GUARDRAIL_ID', this.node.tryGetContext('classifierGuardrailId') ?? '');
+    inboundRouterFn.addEnvironment(
+      'CLASSIFIER_GUARDRAIL_VERSION',
+      this.node.tryGetContext('classifierGuardrailVersion') ?? '',
+    );
     // Meta app credentials: the App Secret signs every inbound webhook (X-Hub-Signature-256),
     // the verify token answers Meta's GET registration handshake. Both live in the Meta app
     // console, not in this CDK app, so they use the same empty-string context seam as the

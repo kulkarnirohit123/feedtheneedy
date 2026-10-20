@@ -43,6 +43,7 @@ all defaulting to empty strings:
 | context key | env var | what it is |
 | --- | --- | --- |
 | `classifierModelId` | `CLASSIFIER_MODEL_ID` | Bedrock model (or inference profile) id used to classify inbound donor messages, e.g. `apac.amazon.nova-lite-v1:0`. Classic Bedrock Agents is in maintenance mode for new accounts, and Anthropic models need an AWS Marketplace agreement this account's entitlements can't complete, so this calls Amazon Nova (first-party, no marketplace step) directly via `InvokeModel`, not an Agent |
+| `classifierGuardrailId` / `classifierGuardrailVersion` | `CLASSIFIER_GUARDRAIL_ID` / `CLASSIFIER_GUARDRAIL_VERSION` | A Bedrock Guardrail (`aws bedrock create-guardrail` + `create-guardrail-version`) that screens raw inbound text for prompt-injection and harmful content before classification. Optional — `classifier.ts` fails open (treats the message as unblocked) when either is unset |
 | `whatsappOriginationPhoneNumberId` | `WHATSAPP_ORIGINATION_PHONE_NUMBER_ID` | End User Messaging Social phone-number id used for outbound sends |
 | `metaAppSecret` | `META_APP_SECRET` | Meta app secret — verifies the `X-Hub-Signature-256` on every inbound webhook. **Required**; the webhook 403s without it |
 | `metaWebhookVerifyToken` | `META_WEBHOOK_VERIFY_TOKEN` | any string you choose; must match what you enter in Meta's webhook-registration form |
@@ -51,7 +52,7 @@ all defaulting to empty strings:
 This plan does not provision the WhatsApp phone number itself —
 provision that manually (console or CLI), then either:
 
-- redeploy with the real values: `npx cdk deploy --all -c classifierModelId=<model-or-profile-id> -c whatsappOriginationPhoneNumberId=<phone-id> -c metaAppSecret=<secret> -c metaWebhookVerifyToken=<token> -c metaAccessToken=<token>`, or
+- redeploy with the real values: `npx cdk deploy --all -c classifierModelId=<model-or-profile-id> -c classifierGuardrailId=<guardrail-id> -c classifierGuardrailVersion=<guardrail-version> -c whatsappOriginationPhoneNumberId=<phone-id> -c metaAppSecret=<secret> -c metaWebhookVerifyToken=<token> -c metaAccessToken=<token>`, or
 - patch the already-deployed `InboundRouterFn`'s environment directly via
   `aws lambda update-function-configuration` (faster for iterating during
   a demo, but gets overwritten on the next `cdk deploy`).

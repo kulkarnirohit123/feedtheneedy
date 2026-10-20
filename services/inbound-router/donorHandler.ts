@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
-import { classifyMessage, ClassifierError } from './classifier';
+import { classifyMessage, checkGuardrail, ClassifierError } from './classifier';
 import { putRequest, putSpamLog, hasProcessedMessage, markMessageProcessed } from '../shared/dynamo';
 import { sendWhatsAppText } from '../shared/whatsapp';
 import { FoodRequest } from '../shared/types';
@@ -33,6 +33,18 @@ export async function handleDonorMessage(input: InboundDonorMessage): Promise<vo
   }
 
   const now = new Date().toISOString();
+
+  if (await checkGuardrail(input.text)) {
+    await putSpamLog({
+      msgId: input.messageId,
+      phone: input.fromPhone,
+      rawText: input.text,
+      verdict: 'blocked_by_guardrail',
+      confidence: 1,
+    });
+    await markMessageProcessed(input.messageId);
+    return;
+  }
 
   try {
     const result = await classifyMessage(input.text);
