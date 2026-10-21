@@ -142,34 +142,41 @@ export function Dashboard({ onSignedOut = NOOP }: { onSignedOut?: () => void }) 
         {requests.length === 0 && !error ? (
           <p className="ledger-empty">No pickup requests yet.</p>
         ) : (
-          <ul className="ledger-list">
-            {requests.map((r) => (
-              <li key={r.requestId} className="ledger-row" style={STATUS_STYLE[r.status] ?? DEFAULT_STATUS_STYLE}>
-                <div className="ledger-meta">
-                  <span className="req-id" title={r.requestId}>
-                    {shortId(r.requestId)}
-                  </span>
-                  <span className="req-time">{timeAgo(r.createdAt)}</span>
-                </div>
-                <div className="ledger-main">
-                  <span className="status-tag">{r.status}</span>
-                  <span className="donor-phone" title="Donor's WhatsApp number">
-                    {r.donorPhone}
-                  </span>
-                  <span className="ledger-detail">{describeOffer(r.qty, r.foodType)}</span>
-                  {r.locationText ? <span className="ledger-location">{r.locationText}</span> : null}
-                  {r.driverId ? <span className="driver-chip">{r.driverId}</span> : null}
-                </div>
-                <button
-                  className="btn btn-primary"
-                  onClick={() => handleReassign(r.requestId)}
-                  disabled={busyRequestId === r.requestId}
-                >
-                  Reassign
-                </button>
-              </li>
-            ))}
-          </ul>
+          <>
+            <div className="ledger-head">
+              <span className="ledger-head-meta">Request</span>
+              <span className="ledger-head-main">Status, donor and pickup details</span>
+              <span className="ledger-head-action">Action</span>
+            </div>
+            <ul className="ledger-list">
+              {requests.map((r) => (
+                <li key={r.requestId} className="ledger-row" style={STATUS_STYLE[r.status] ?? DEFAULT_STATUS_STYLE}>
+                  <div className="ledger-meta">
+                    <span className="req-id" title={r.requestId}>
+                      {shortId(r.requestId)}
+                    </span>
+                    <span className="req-time">{timeAgo(r.createdAt)}</span>
+                  </div>
+                  <div className="ledger-main">
+                    <span className="status-tag">{r.status}</span>
+                    <span className="donor-phone" title="Donor's WhatsApp number">
+                      {r.donorPhone}
+                    </span>
+                    <span className="ledger-detail">{describeOffer(r.qty, r.foodType)}</span>
+                    {r.locationText ? <span className="ledger-location">{r.locationText}</span> : null}
+                    {r.driverId ? <span className="driver-chip">{r.driverId}</span> : null}
+                  </div>
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => handleReassign(r.requestId)}
+                    disabled={busyRequestId === r.requestId}
+                  >
+                    Reassign
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
       </main>
     </div>

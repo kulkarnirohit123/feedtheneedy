@@ -176,11 +176,35 @@ button {
   padding: 1.5rem 0;
 }
 
+.ledger-head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0.25rem 0.5rem 0.75rem;
+  font-size: 0.72rem;
+  color: var(--steel);
+  border-bottom: 1px solid var(--chalk-line);
+}
+
+.ledger-head-meta {
+  width: 5.5rem;
+  flex-shrink: 0;
+}
+
+.ledger-head-main {
+  flex: 1;
+}
+
+.ledger-head-action {
+  width: 6.4rem;
+  flex-shrink: 0;
+  text-align: right;
+}
+
 .ledger-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  border-top: 1px solid var(--chalk-line);
 }
 
 .ledger-row {
