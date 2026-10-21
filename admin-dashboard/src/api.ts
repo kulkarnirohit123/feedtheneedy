@@ -9,6 +9,8 @@ export interface FoodRequest {
   qty: string;
   foodType: string;
   driverId?: string;
+  createdAt?: string;
+  locationText?: string;
 }
 
 export class SessionExpiredError extends Error {}

@@ -59,9 +59,10 @@ button {
 
 .board-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: 1rem 2rem;
   background: var(--leaf);
   color: var(--chalk);
   padding: 1.1rem 1.5rem;
@@ -83,6 +84,30 @@ button {
 .board-brand p {
   margin: 0;
   font-size: 0.82rem;
+  color: #c8d6cb;
+}
+
+.board-summary {
+  display: flex;
+  gap: 1.75rem;
+}
+
+.summary-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.2;
+}
+
+.summary-count {
+  font-family: var(--font-data);
+  font-size: 1.3rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.summary-label {
+  font-size: 0.72rem;
   color: #c8d6cb;
 }
 
@@ -172,12 +197,35 @@ button {
   background: #efe9da;
 }
 
-.req-id {
-  font-family: var(--font-data);
-  font-size: 0.85rem;
-  color: var(--steel);
+.ledger-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
   width: 5.5rem;
   flex-shrink: 0;
+}
+
+.req-id {
+  font-family: var(--font-data);
+  font-size: 0.82rem;
+  color: var(--steel);
+  cursor: help;
+}
+
+.req-time {
+  font-family: var(--font-data);
+  font-size: 0.68rem;
+  color: var(--steel);
+  opacity: 0.75;
+}
+
+.ledger-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.55rem;
 }
 
 .status-tag {
@@ -190,10 +238,25 @@ button {
   white-space: nowrap;
 }
 
+.donor-phone {
+  font-family: var(--font-data);
+  font-size: 0.8rem;
+  color: var(--steel);
+  white-space: nowrap;
+}
+
 .ledger-detail {
-  flex: 1;
   font-size: 0.9rem;
-  min-width: 0;
+}
+
+.ledger-location {
+  font-family: var(--font-data);
+  font-size: 0.78rem;
+  color: var(--steel);
+  background: var(--steel-tint);
+  padding: 0.2rem 0.5rem;
+  border-radius: 3px;
+  white-space: nowrap;
 }
 
 .driver-chip {
