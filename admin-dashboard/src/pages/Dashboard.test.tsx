@@ -159,8 +159,8 @@ test('requests are listed newest first', async () => {
 
   render(<Dashboard />);
 
-  await waitFor(() => expect(screen.getAllByRole('button', { pressed: false }).length).toBeGreaterThan(0));
-  const cards = screen.getAllByRole('button').filter((b) => b.classList.contains('card'));
-  expect(cards[0]).toHaveTextContent('new offer');
-  expect(cards[1]).toHaveTextContent('old offer');
+  await waitFor(() => expect(screen.getAllByText('new offer').length).toBeGreaterThan(0));
+  const rows = screen.getAllByRole('row').slice(1); // skip the header row
+  expect(rows[0]).toHaveTextContent('new offer');
+  expect(rows[1]).toHaveTextContent('old offer');
 });

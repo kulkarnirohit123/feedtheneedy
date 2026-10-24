@@ -11,13 +11,12 @@ import {
   timeAgo,
   whatsappLink,
 } from '../status';
-import { BrandMark, RefreshIcon, SearchIcon } from '../icons';
 
 const NOOP = () => {};
 /** The board polls so a dispatcher doesn't have to keep hitting Refresh while a pickup moves. */
 const POLL_INTERVAL_MS = 30_000;
 
-type Filter = 'all' | 'review' | 'active' | 'done';
+type Filter = 'all' | Exclude<StatusTone, 'spam'>;
 
 const FILTERS: { key: Filter; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -38,6 +37,10 @@ function matchesQuery(r: FoodRequest, query: string): boolean {
 /** DynamoDB Scan returns items in no particular order; dispatchers want the newest on top. */
 function newestFirst(a: FoodRequest, b: FoodRequest): number {
   return (b.createdAt ?? '').localeCompare(a.createdAt ?? '');
+}
+
+function areaOf(r: FoodRequest): string {
+  return r.locationText ?? (r.awaitingLocation ? 'Waiting for location' : 'Area not given');
 }
 
 export function Dashboard({ onSignedOut = NOOP }: { onSignedOut?: () => void }) {
@@ -79,7 +82,7 @@ export function Dashboard({ onSignedOut = NOOP }: { onSignedOut?: () => void }) 
     const poll = setInterval(() => {
       if (document.visibilityState === 'visible') void load();
     }, POLL_INTERVAL_MS);
-    // Keeps the "updated Xs ago" label and per-row ages honest between polls.
+    // Keeps the "updated" label and per-row ages honest between polls.
     const tick = setInterval(() => setNow(Date.now()), 15_000);
     return () => {
       clearInterval(poll);
@@ -111,7 +114,7 @@ export function Dashboard({ onSignedOut = NOOP }: { onSignedOut?: () => void }) 
   function handleSelect(requestId: string) {
     setSelectedId(requestId);
     setNotice(null);
-    // On a phone the detail panel stacks below the list, so bring it into view.
+    // On a phone the detail section sits below the list, so bring it into view.
     if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 960px)').matches) {
       detailRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
     }
@@ -139,43 +142,24 @@ export function Dashboard({ onSignedOut = NOOP }: { onSignedOut?: () => void }) 
     onSignedOut();
   }
 
-  const updatedLabel = lastUpdated
-    ? `Updated ${timeAgo(new Date(lastUpdated).toISOString(), now)}`
-    : 'Connecting…';
+  const updatedLabel = error
+    ? "Couldn't reach the server"
+    : lastUpdated
+      ? `Updated ${timeAgo(new Date(lastUpdated).toISOString(), now)}`
+      : 'Loading…';
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="topbar-inner">
-          <div className="brand">
-            <BrandMark />
-            <div className="brand-text">
-              <span className="brand-name">Feed the Needy</span>
-              <span className="brand-sub">Pickup dispatch</span>
-            </div>
-          </div>
-
-          <label className="search">
-            <SearchIcon />
-            <span className="sr-only">Search requests</span>
-            <input
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search food, area, phone or driver"
-            />
-          </label>
-
-          <div className="topbar-actions">
-            <span className="live">
-              <span className={`live-dot${error ? ' is-error' : ''}`} aria-hidden="true" />
-              {error ? 'Connection problem' : updatedLabel}
-            </span>
-            <button className="btn btn-ghost" onClick={() => void load()} disabled={loading}>
-              <RefreshIcon spinning={loading} />
-              Refresh
+    <div className="site">
+      <header className="masthead">
+        <div className="masthead-inner">
+          <span className="wordmark">Feed the Needy</span>
+          <span className="masthead-sub">Pickup dispatch</span>
+          <div className="masthead-actions">
+            <span className="muted">{updatedLabel}</span>
+            <button className="btn" onClick={() => void load()} disabled={loading}>
+              {loading ? 'Refreshing…' : 'Refresh'}
             </button>
-            <button className="btn btn-ghost" onClick={handleSignOut}>
+            <button className="link-btn" onClick={handleSignOut}>
               Sign out
             </button>
           </div>
@@ -183,83 +167,98 @@ export function Dashboard({ onSignedOut = NOOP }: { onSignedOut?: () => void }) 
       </header>
 
       <main className="page">
-        <div className="page-head">
-          <h1>Pickup requests</h1>
-          <p>Every WhatsApp food offer, from first message to fridge drop-off.</p>
-        </div>
+        <h1>Pickup requests</h1>
+        <p className="lede">
+          {/* Bold only when someone actually has to act. */}
+          {counts.review > 0 ? (
+            <strong>
+              {counts.review} {counts.review === 1 ? 'needs' : 'need'} review
+            </strong>
+          ) : (
+            'None need review'
+          )}
+          , {counts.active} in progress and {counts.done} delivered, {counts.all} in total. Spam is filtered out
+          before it gets here.
+        </p>
 
         {error && (
-          <p className="banner banner-error" role="alert">
+          <p className="error-text" role="alert">
             {error}
           </p>
         )}
 
-        <section className="stats" aria-label="Summary">
-          <Stat tone="review" label="Needs review" value={counts.review} hint="Unsure offers or missing location" />
-          <Stat tone="active" label="In progress" value={counts.active} hint="Finding a driver through fridge drop" />
-          <Stat tone="done" label="Delivered" value={counts.done} hint="Stored in a community fridge" />
-          <Stat label="All requests" value={counts.all} hint="Spam never reaches this board" />
-        </section>
+        <div className="toolbar">
+          <div className="tabs" role="tablist" aria-label="Filter by stage">
+            {FILTERS.map((f) => (
+              <button
+                key={f.key}
+                role="tab"
+                aria-selected={filter === f.key}
+                className={`tab${filter === f.key ? ' is-active' : ''}`}
+                onClick={() => setFilter(f.key)}
+              >
+                {f.label} <span className="tab-count">{counts[f.key]}</span>
+              </button>
+            ))}
+          </div>
+          <label className="search">
+            <span>Search</span>
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Food, area, phone or driver"
+            />
+          </label>
+        </div>
 
         <div className="workspace">
           <section className="list-col" aria-label="Requests">
-            <div className="list-toolbar">
-              <div className="tabs" role="tablist" aria-label="Filter by stage">
-                {FILTERS.map((f) => (
-                  <button
-                    key={f.key}
-                    role="tab"
-                    aria-selected={filter === f.key}
-                    className={`tab${filter === f.key ? ' is-active' : ''}`}
-                    onClick={() => setFilter(f.key)}
-                  >
-                    {f.label}
-                    <span className="tab-count">{counts[f.key]}</span>
-                  </button>
-                ))}
-              </div>
-              <span className="muted-sm">Newest first</span>
-            </div>
-
             {!loaded ? (
-              <ul className="cards" aria-busy="true">
-                {[0, 1, 2].map((i) => (
-                  <li key={i} className="card-skeleton" aria-hidden="true" />
-                ))}
-              </ul>
+              <p className="muted list-message">Loading requests…</p>
             ) : visible.length === 0 ? (
-              <div className="empty">
+              <p className="muted list-message">
                 {requests.length === 0
-                  ? 'No pickup requests yet. New WhatsApp offers will appear here.'
+                  ? 'No pickup requests yet. New WhatsApp offers will show up here.'
                   : 'No requests match this view.'}
-              </div>
+              </p>
             ) : (
-              <ul className="cards">
-                {visible.map((r) => (
-                  <li key={r.requestId}>
-                    <RequestCard
+              <table className="requests">
+                <thead>
+                  <tr>
+                    <th scope="col">Offer</th>
+                    <th scope="col">Donor</th>
+                    <th scope="col">Driver</th>
+                    <th scope="col">Status</th>
+                    <th scope="col" className="num">
+                      Received
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map((r) => (
+                    <RequestRow
+                      key={r.requestId}
                       request={r}
                       now={now}
                       selected={selected?.requestId === r.requestId}
                       onSelect={() => handleSelect(r.requestId)}
                     />
-                  </li>
-                ))}
-              </ul>
+                  ))}
+                </tbody>
+              </table>
             )}
           </section>
 
           <aside className="detail-col" aria-label="Request details" ref={detailRef}>
-            {selected ? (
-              <DetailPanel
+            {selected && (
+              <RequestDetail
                 key={selected.requestId}
                 request={selected}
                 now={now}
                 notice={notice}
                 onReassign={(driverId) => handleReassign(selected.requestId, driverId)}
               />
-            ) : (
-              <div className="detail-empty">Select a request to see its progress.</div>
             )}
           </aside>
         </div>
@@ -268,41 +267,17 @@ export function Dashboard({ onSignedOut = NOOP }: { onSignedOut?: () => void }) 
   );
 }
 
-function Stat({ tone, label, value, hint }: { tone?: StatusTone; label: string; value: number; hint: string }) {
-  const attention = tone === 'review' && value > 0;
-  return (
-    <div className={`stat${tone ? ` tone-${tone}` : ''}${attention ? ' needs-attention' : ''}`}>
-      <span className="stat-label">
-        {tone && <span className="dot" aria-hidden="true" />}
-        {label}
-      </span>
-      <span className="stat-value">{value}</span>
-      <span className="stat-hint">{hint}</span>
-    </div>
-  );
-}
-
-function StatusPill({ status }: { status: string }) {
+function StatusLabel({ status }: { status: string }) {
   const meta = statusMeta(status);
   return (
-    <span className={`pill tone-${meta.tone}`} title={status}>
+    <span className="status" title={status}>
+      <span className={`status-mark tone-${meta.tone}`} aria-hidden="true" />
       {meta.label}
     </span>
   );
 }
 
-function ProgressTrack({ status }: { status: string }) {
-  const meta = statusMeta(status);
-  return (
-    <span className={`track tone-${meta.tone}`} aria-hidden="true">
-      {[1, 2, 3, 4, 5].map((i) => (
-        <span key={i} className={`track-seg${i <= meta.step ? ' is-done' : ''}`} />
-      ))}
-    </span>
-  );
-}
-
-function RequestCard({
+function RequestRow({
   request: r,
   now,
   selected,
@@ -313,35 +288,31 @@ function RequestCard({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const meta = statusMeta(r.status);
-  const area = r.locationText ?? (r.awaitingLocation ? 'Waiting for location' : 'Area not given');
   return (
-    <button
-      type="button"
-      className={`card tone-${meta.tone}${selected ? ' is-selected' : ''}`}
-      aria-pressed={selected}
-      onClick={onSelect}
-    >
-      <span className="card-top">
-        <span className="card-titles">
-          <span className="card-title">{describeOffer(r.qty, r.foodType)}</span>
-          <span className="card-sub">
-            {area} · <span className="mono">{r.donorPhone}</span>
-          </span>
-        </span>
-        <StatusPill status={r.status} />
-      </span>
-      <span className="card-bottom">
-        <ProgressTrack status={r.status} />
-        <span className="card-stage">{meta.waitingOn}</span>
-        <span className="card-driver mono">{r.driverId ?? 'No driver yet'}</span>
-        <span className="card-age">{timeAgo(r.createdAt, now)}</span>
-      </span>
-    </button>
+    <tr className={selected ? 'is-selected' : undefined} aria-current={selected ? 'true' : undefined} onClick={onSelect}>
+      <td className="offer">
+        <button type="button" className="row-link" onClick={(e) => (e.stopPropagation(), onSelect())}>
+          {describeOffer(r.qty, r.foodType)}
+        </button>
+        <span className="muted">{areaOf(r)}</span>
+      </td>
+      <td className="nowrap tabular" data-label="Donor">
+        {r.donorPhone}
+      </td>
+      <td className="nowrap" data-label="Driver">
+        {r.driverId ?? '—'}
+      </td>
+      <td className="nowrap" data-label="Status">
+        <StatusLabel status={r.status} />
+      </td>
+      <td className="nowrap num muted" data-label="Received">
+        {timeAgo(r.createdAt, now)}
+      </td>
+    </tr>
   );
 }
 
-function DetailPanel({
+function RequestDetail({
   request: r,
   now,
   notice,
@@ -370,111 +341,95 @@ function DetailPanel({
     }
   }
 
-  // reassignCount only tracks the state machine's timeout reassigns, not admin overrides.
-  const driverNote = r.reassignCount
-    ? `Auto-reassigned ${r.reassignCount}×`
-    : r.driverId
-      ? 'Current driver'
-      : 'Not matched yet';
-
   return (
-    <div className={`detail tone-${meta.tone}`}>
-      <div className="detail-head">
-        <span className="mono muted-sm" title={r.requestId}>
-          #{shortId(r.requestId)}
-          {r.createdAt ? ` · ${timeAgo(r.createdAt, now)}` : ''}
-        </span>
-        <StatusPill status={r.status} />
-      </div>
-
-      <div className="detail-title">
-        <h2>{describeOffer(r.qty, r.foodType)}</h2>
-        <span className="muted">{r.locationText ?? 'Area not given'}</span>
-      </div>
+    <div className="detail">
+      <p className="muted small" title={r.requestId}>
+        Request {shortId(r.requestId)}
+        {r.createdAt ? ` · received ${timeAgo(r.createdAt, now)}` : ''}
+      </p>
+      <h2>{describeOffer(r.qty, r.foodType)}</h2>
+      <p className="detail-area">{r.locationText ?? 'Area not given'}</p>
 
       {r.awaitingLocation && (
-        <p className="banner banner-warn">The donor has been asked to share their location on WhatsApp.</p>
+        <p className="note">We've asked the donor to share their location on WhatsApp.</p>
       )}
 
-      <div className="facts">
-        <div className="fact">
-          <span className="fact-label">Donor</span>
-          <span className="mono">{r.donorPhone}</span>
+      <dl className="facts">
+        <dt>Status</dt>
+        <dd>
+          <StatusLabel status={r.status} />
+        </dd>
+        <dt>Donor</dt>
+        <dd className="tabular">
+          {r.donorPhone} ·{' '}
           <a href={whatsappLink(r.donorPhone)} target="_blank" rel="noreferrer">
-            Open in WhatsApp
+            WhatsApp
           </a>
-        </div>
-        <div className="fact">
-          <span className="fact-label">Driver</span>
-          <span className="mono">{r.driverId ?? 'Not assigned'}</span>
-          <span className="muted-sm">{driverNote}</span>
-        </div>
+        </dd>
+        <dt>Driver</dt>
+        <dd>
+          {r.driverId ?? 'Not assigned yet'}
+          {/* reassignCount only tracks the state machine's timeout reassigns, not admin overrides. */}
+          {r.reassignCount ? <span className="muted"> (auto-reassigned {r.reassignCount}×)</span> : null}
+        </dd>
         {r.fridgeId && (
-          <div className="fact">
-            <span className="fact-label">Fridge</span>
-            <span className="mono">{r.fridgeId}</span>
-          </div>
-        )}
-      </div>
-
-      <div>
-        <h3 className="section-label">Progress</h3>
-        <ol className="timeline">
-          {MILESTONES.map((m, i) => {
-            const state = i <= meta.step ? 'done' : i === meta.step + 1 ? 'current' : 'todo';
-            return (
-              <li key={m.label} className={`step is-${state}`}>
-                <span className="step-rail" aria-hidden="true">
-                  <span className="step-dot" />
-                  <span className="step-line" />
-                </span>
-                <span className="step-body">
-                  <span className="step-label">
-                    {m.label}
-                    {state === 'current' && <span className="sr-only"> (next)</span>}
-                  </span>
-                  <span className="step-hint">{m.hint}</span>
-                </span>
-              </li>
-            );
-          })}
-        </ol>
-      </div>
-
-      <div className="reassign">
-        <h3 className="section-label">Reassign driver</h3>
-        {reassignable ? (
           <>
-            <form onSubmit={submit} className="reassign-form">
-              <label className="field">
-                <span>Driver ID</span>
-                <input
-                  className="mono"
-                  value={driverId}
-                  onChange={(e) => setDriverId(e.target.value)}
-                  placeholder="e.g. driver-2"
-                  autoComplete="off"
-                />
-              </label>
-              <button type="submit" className="btn btn-primary" disabled={busy || !driverId.trim()}>
-                {busy ? 'Reassigning…' : 'Reassign'}
-              </button>
-            </form>
-            <p className="muted-sm">The new driver gets a WhatsApp message and the previous one is freed up.</p>
+            <dt>Fridge</dt>
+            <dd>{r.fridgeId}</dd>
           </>
-        ) : (
-          <p className="muted-box">
-            {meta.tone === 'spam'
-              ? 'Spam requests are never dispatched.'
-              : 'The driver has already accepted, so this pickup can no longer be reassigned.'}
-          </p>
         )}
-        {notice && (
-          <p className="banner banner-ok" role="status">
-            {notice}
-          </p>
-        )}
-      </div>
+      </dl>
+
+      <h3>Progress</h3>
+      <ol className="progress">
+        {MILESTONES.map((m, i) => {
+          const state = i <= meta.step ? 'done' : i === meta.step + 1 ? 'next' : 'todo';
+          return (
+            <li key={m.label} className={`is-${state}`}>
+              <span className="progress-mark" aria-hidden="true">
+                {state === 'done' ? '✓' : state === 'next' ? '→' : ''}
+              </span>
+              <span>
+                {m.label}
+                {state === 'next' && ' (next)'}
+                {state === 'done' && <span className="sr-only"> (done)</span>}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+
+      <h3>Reassign driver</h3>
+      {reassignable ? (
+        <>
+          <form onSubmit={submit} className="reassign-form">
+            <label className="field">
+              <span>Driver ID</span>
+              <input
+                value={driverId}
+                onChange={(e) => setDriverId(e.target.value)}
+                placeholder="e.g. driver-2"
+                autoComplete="off"
+              />
+            </label>
+            <button type="submit" className="btn btn-dark" disabled={busy || !driverId.trim()}>
+              {busy ? 'Reassigning…' : 'Reassign'}
+            </button>
+          </form>
+          <p className="muted small">The new driver is messaged on WhatsApp and the previous one is released.</p>
+        </>
+      ) : (
+        <p className="small">
+          {meta.tone === 'spam'
+            ? 'Spam requests are never dispatched.'
+            : "The driver has already accepted, so this pickup can't be reassigned."}
+        </p>
+      )}
+      {notice && (
+        <p className="success-text" role="status">
+          {notice}
+        </p>
+      )}
     </div>
   );
 }

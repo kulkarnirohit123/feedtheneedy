@@ -18,7 +18,7 @@ export const STATUS_META: Record<string, StatusMeta> = {
   RECEIVED: { label: 'Received', tone: 'review', step: 0, waitingOn: 'Being classified' },
   PENDING_REVIEW: { label: 'Needs review', tone: 'review', step: 0, waitingOn: 'Waiting on an admin' },
   REJECTED_SPAM: { label: 'Spam', tone: 'spam', step: 0, waitingOn: 'Dropped as spam' },
-  MATCHING: { label: 'Finding driver', tone: 'active', step: 0, waitingOn: 'Matching the nearest driver' },
+  MATCHING: { label: 'Finding a driver', tone: 'active', step: 0, waitingOn: 'Matching the nearest driver' },
   DRIVER_ASSIGNED: { label: 'Driver notified', tone: 'active', step: 1, waitingOn: 'Waiting for the driver to accept' },
   DRIVER_ACCEPTED: { label: 'On the way', tone: 'active', step: 2, waitingOn: 'Driver heading to the donor' },
   PICKUP_PHOTO_CONFIRMED: { label: 'Picked up', tone: 'active', step: 3, waitingOn: 'Choosing a fridge' },
@@ -68,10 +68,11 @@ export function timeAgo(iso: string | undefined, now: number = Date.now()): stri
   if (!iso) return '';
   const minutes = Math.round((now - new Date(iso).getTime()) / 60000);
   if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? 'yesterday' : `${days} days ago`;
 }
 
 /** wa.me wants the number as bare digits, country code included. */
