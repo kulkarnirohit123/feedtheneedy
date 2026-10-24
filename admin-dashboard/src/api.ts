@@ -10,7 +10,14 @@ export interface FoodRequest {
   foodType: string;
   driverId?: string;
   createdAt?: string;
+  updatedAt?: string;
   locationText?: string;
+  fridgeId?: string;
+  reassignCount?: number;
+  /** Set while a confident offer waits for the donor to share a WhatsApp location. */
+  awaitingLocation?: boolean;
+  pickupPhotoUrl?: string;
+  fridgePhotoUrl?: string;
 }
 
 export class SessionExpiredError extends Error {}
