@@ -834,6 +834,44 @@
     font-size: 0.8rem;
     color: var(--ink-muted);
   }
+
+  /* ---------- Floating WhatsApp button ---------- */
+
+  .whatsapp-float {
+    position: fixed;
+    right: 1.25rem;
+    bottom: 1.25rem;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    background: #25d366;
+    color: #ffffff;
+    border-radius: 999px;
+    padding: 0.8rem 1.1rem;
+    box-shadow: 0 10px 24px -8px rgba(0, 0, 0, 0.35);
+    font-weight: 700;
+    font-size: 0.88rem;
+    transition: transform 150ms ease, box-shadow 150ms ease;
+  }
+
+  .whatsapp-float:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 14px 28px -8px rgba(0, 0, 0, 0.4);
+  }
+
+  .whatsapp-float .icon {
+    font-size: 22px;
+  }
+
+  @media (max-width: 480px) {
+    .whatsapp-float span.label {
+      display: none;
+    }
+    .whatsapp-float {
+      padding: 0.8rem;
+    }
+  }
 </style>
 </head>
 <body>
@@ -1181,5 +1219,17 @@
     </div>
   </div>
 </footer>
+
+<a
+  class="whatsapp-float"
+  href="https://wa.me/17113607876?text=Hi%2C%20I%20have%20surplus%20food%20to%20give%20away"
+  target="_blank"
+  rel="noopener"
+  aria-label="Message Feed the Needy on WhatsApp"
+>
+  <span class="icon fill">chat</span>
+  <span class="label">Message us</span>
+</a>
+
 </body>
 </html>
