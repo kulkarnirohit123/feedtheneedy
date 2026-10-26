@@ -62,7 +62,7 @@ export class LandingStack extends Stack {
     // index.html (Login/Dashboard toggle is component state, not a URL), so no SPA fallback
     // rewrite is needed — only /admin/index.html itself has to resolve.
     new BucketDeployment(this, 'AdminAppDeployment', {
-      sources: [Source.asset(path.join(__dirname, '..', '..', 'admin-dashboard', 'dist'))],
+      sources: [Source.asset(path.join(__dirname, '..', '..', 'admin-dashboard', 'dist-admin'))],
       destinationBucket: siteBucket,
       destinationKeyPrefix: 'admin',
       distribution,
