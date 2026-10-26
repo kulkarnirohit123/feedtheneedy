@@ -22,7 +22,22 @@ test('creates a private S3 bucket and a CloudFront distribution with OAC', () =>
   });
 });
 
-test('deploys the landing page assets into the bucket', () => {
+test('deploys both the landing page and the admin app (under /admin) into the bucket', () => {
   const template = synthLanding();
-  template.resourceCountIs('Custom::CDKBucketDeployment', 1);
+  template.resourceCountIs('Custom::CDKBucketDeployment', 2);
+  template.hasResourceProperties('Custom::CDKBucketDeployment', {
+    DestinationBucketKeyPrefix: 'admin',
+  });
+});
+
+test('rewrites /login to the admin app at the edge', () => {
+  const template = synthLanding();
+  template.resourceCountIs('AWS::CloudFront::Function', 1);
+  template.hasResourceProperties('AWS::CloudFront::Distribution', {
+    DistributionConfig: {
+      DefaultCacheBehavior: {
+        FunctionAssociations: [{ EventType: 'viewer-request' }],
+      },
+    },
+  });
 });
