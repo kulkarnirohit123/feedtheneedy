@@ -1,6 +1,7 @@
 {
   "name": "food-ngo-pickup-platform",
   "version": "0.1.0",
+  "license": "MIT",
   "description": "AWS-native WhatsApp food-pickup coordination platform",
   "scripts": {
     "build:services": "tsc -p services/tsconfig.json"
