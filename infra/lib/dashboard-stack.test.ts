@@ -26,3 +26,15 @@ test('deploys the built admin-dashboard assets into the bucket', () => {
   const template = synthDashboard();
   template.resourceCountIs('Custom::CDKBucketDeployment', 1);
 });
+
+test('redirects every request to the unified landing+login site', () => {
+  const template = synthDashboard();
+  template.resourceCountIs('AWS::CloudFront::Function', 1);
+  template.hasResourceProperties('AWS::CloudFront::Distribution', {
+    DistributionConfig: {
+      DefaultCacheBehavior: {
+        FunctionAssociations: [{ EventType: 'viewer-request' }],
+      },
+    },
+  });
+});
